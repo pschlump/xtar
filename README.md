@@ -157,7 +157,7 @@ ambiguity and drives *creation*; sniffing decides *reading*.
 | lz4 frame     | `04 22 4d 18`                             | skippable + concatenated frames ok       |
 | zip           | `PK\x03\x04` / `PK\x05\x06` (empty) / `PK\x07\x08` (spanned) | zip64 supported          |
 | 7z            | `7z\xbc\xaf\x27\x1c`                      | *planned*                                |
-| ar            | `!<arch>\n`                               | read-side, phase 3                       |
+| ar            | `!<arch>\n`                               | read-side, not yet scheduled             |
 | rar           | `Rar!\x1a\x07`                            | out of scope (see [limits](#what-is-deliberately-not-supported-yet)) |
 | cpio (odc)    | `"070707"` at 0                           | ASCII portable                           |
 | cpio (newc)   | `"070701"` at 0                           | SVR4                                     |
@@ -262,8 +262,8 @@ Compatible with Info-ZIP zip's common surface.
 * `zip [flags] ARCHIVE INFILES...` — first operand is the archive, the rest
   are inputs; adding an existing archive updates/replaces matching members by
   default (as Info-ZIP does).
-* Key flags: `-r` recurse, `-e` encrypt (read side: traditional PKWARE
-  encryption; writing AES-encrypted zips is phase 4+), `-0`…`-9` level
+* Key flags: `-r` recurse, `-e` encrypt (traditional PKWARE, read and
+  written; AES is M5/M6), `-0`…`-9` level
   (`-0` = store), `-x` exclude, `-i` include, `-m` move (delete inputs after),
   `-d` delete members, `-u`/`-f` update/freshen, `-g` grow in place, `-s SIZE`
   split, `-j` junk paths, `-y` store symlinks as symlinks, `-T` test after,
@@ -432,12 +432,14 @@ policy with dialect-native spellings.
   charset — bytes pass through. `--encoding=` converts member names on read
   (zips created by old Windows tools are the usual customer).
 * **Sparse files.** GNU/PAX sparse tar records are read correctly; writing
-  sparse is phase 4.
-* **Concatenation.** Multi-member gzip, concatenated lz4 frames, and
-  multi-volume zip (spanned, `PK\x07\x08`) are all read. Split-zip *writing*
-  (`zip -s`) is phase 3.
-* **Encryption.** zip traditional PKWARE encryption is read (passwords via
-  `-P`/`-p`/prompt); AES-encrypted zips and 7z AES are read in phase 4;
+  sparse is M4.
+* **Concatenation.** Multi-member gzip and concatenated lz4 frames are read.
+  Spanned zip is *sniffed* (the `PK\x07\x08` markers) but split assembly is
+  not implemented — it errors clearly until M5; split-zip *writing*
+  (`zip -s`) is likewise deferred.
+* **Encryption.** zip traditional PKWARE encryption is read and written
+  (passwords via `-P`/`-p`/prompt; shipped in M3); AES-encrypted zips and
+  7z AES arrive with the 7z crypto work (M5–M6);
   tar/cpio have no encryption and never will (dialect errors if asked).
 * **Empty input.** `tar -tf` on an empty file errors with tar's message;
   an empty zip (`PK\x05\x06` only) lists zero members; both match the tools.
@@ -479,11 +481,12 @@ not supported"`), never silently passes bytes through.
 ### Memory model (current constraint)
 
 pluto's codecs are whole-buffer (`[]byte → []byte`), not `io.Reader` streaming.
-xtar phase 1–3 therefore materializes each archive layer/member in memory.
-This is fine for the sizes tar/cpio/zip workflows typically see, and it is
-called out honestly because `tar -xf` on a 40 GB tarball is a legitimate use.
-The streaming refactor (pluto `NewReader/NewWriter` pairs) is roadmap item M4
-and unlocks large-archive operation plus true stdin streaming.
+xtar M1–M3 — the code that ships today — therefore materialize each archive
+layer/member in memory. This is fine for the sizes tar/cpio/zip workflows
+typically see, and it is called out honestly because `tar -xf` on a 40 GB
+tarball is a legitimate use. The streaming refactor (pluto
+`NewReader/NewWriter` pairs) is roadmap item M4 and unlocks large-archive
+operation plus true stdin streaming.
 
 ---
 
@@ -493,13 +496,19 @@ and unlocks large-archive operation plus true stdin streaming.
   a pointer to `unar`/`unrar`. Revisit only if pluto grows a rar decoder.
 * **tar incremental/backups** (`-G`, `-N`, snapshot files) — a whole product
   of its own; not part of replacing day-to-day tar/cpio/zip usage.
-* **Multi-tape/tape devices** (`-M`, `mt`-adjacent behavior); `TAPE`
-  environment variable support follows in M2 (it's cheap).
+* **Multi-tape/tape devices** (`-M`, `mt`-adjacent behavior). The `TAPE`
+  environment variable *is* honored (it landed with M1); multi-volume
+  itself stays out.
 * **`zip -e` writing AES** (reading AES arrives with 7z crypto in M5);
-  traditional PKWARE encryption is read and written from M3.
-* **7z writing** its own container (reading is M5, writing is M6+).
+  traditional PKWARE encryption is read and written since M3.
+* **7z writing** its own container (reading is M5, writing is M6+). M3
+  shipped the `7z` *dialect* — the familiar `a/l/t/x/e/d` verbs driving
+  the tar/cpio/zip containers and every codec layer — which covers every
+  task that does not require the native container.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
   macOS resource forks — PAX-limited in M4 alongside sparse.
+* **Hidden password entry.** Password and replace prompts read plain lines,
+  so typed input echoes; no-echo needs a terminal raw-mode layer (M4).
 
 ---
 
@@ -586,14 +595,21 @@ the empty-zip case, and extension/magic conflicts.
 
 ## Roadmap
 
-| milestone | contents |
-|-----------|----------|
-| **M1** | skeleton: argv[0] dispatch, sniffing/peel engine, `--sniff`; tar dialect read+write (v7/ustar/GNU read, GNU write; PAX read) over the gzip layer; extract/list/create with path safety |
-| **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar |
-| **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode |
-| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding` |
-| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); full 7z dialect verbs over all formats |
-| **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass |
+| milestone | contents | status |
+|-----------|----------|--------|
+| **M1** | skeleton: argv[0] dispatch, sniffing/peel engine, `--sniff`; tar dialect read+write (v7/ustar/GNU read, GNU write; PAX read) over the gzip layer; extract/list/create with path safety | ✅ shipped — 9c0c43a |
+| **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
+| **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
+| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | next |
+| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | |
+| **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
+
+M3 landed ahead of the plan in three places and short in one: zip64 is
+*written* as well as read (the plan only promised read); the `7z` dialect
+front-end moved up from M5 (`7z a/l/t/x/e/d` drive tar/cpio/zip and the
+codec layers today, native `.7z` stays M5/M6); bzip2-protocol zip members
+(method 12) rode along; and split-zip reading did not make it — spanned
+archives are sniffed and then error clearly until M5.
 
 Each milestone ends green on `make test` including the interop suite, and each
 new format lands with its golden fixtures and a README table update.
