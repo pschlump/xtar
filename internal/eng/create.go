@@ -13,6 +13,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
 	"github.com/pschlump/xtar/internal/tarfmt"
 	"github.com/pschlump/xtar/internal/walk"
@@ -72,7 +73,11 @@ func Create(o *CreateOpts) (*Archive, error) {
 		blob, err = tarfmt.Build(o.TarFormat, mems)
 		a.Format = "tar"
 		a.Variant = defaultStr(o.TarFormat, "gnu")
-	case "cpio", "zip":
+	case "cpio":
+		blob, err = cpiofmt.Build(defaultStr(o.CpioFormat, "newc"), mems)
+		a.Format = "cpio"
+		a.Variant = defaultStr(o.CpioFormat, "newc")
+	case "zip":
 		return nil, fmt.Errorf("%s archives are not supported yet — see the README roadmap", container)
 	case "":
 		if len(mems) != 1 {

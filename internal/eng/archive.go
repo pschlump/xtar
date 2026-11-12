@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
 	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/sniff"
@@ -150,6 +151,15 @@ func parseContainer(a *Archive, r sniff.Result, cur []byte) error {
 		a.Variant = t.Variant
 		a.Members = t.Members
 		a.Notes = append(a.Notes, t.Notes...)
+	case "cpio":
+		c, err := cpiofmt.Parse(cur)
+		if err != nil {
+			return fmt.Errorf("%w", err)
+		}
+		a.Format = "cpio"
+		a.Variant = c.Variant
+		a.Members = c.Members
+		a.Notes = append(a.Notes, c.Notes...)
 	default:
 		return UnsupportedError(r.Format)
 	}

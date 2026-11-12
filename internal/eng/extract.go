@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type ExtractOpts struct {
 	Flatten     bool                // 7z e / unzip -j
 	Strip       int                 // --strip-components
 	Transform   func(string) string // rename members on the way out (GNU tar --transform)
+	NoDirs      bool                // cpio without -d: members with missing parents are skipped
 	Overwrite   Overwrite
 	KeepPerms   bool // -p: apply stored permissions regardless of umask
 	NoSameOwner bool
@@ -103,6 +105,12 @@ func (x *extractor) warnf(format string, args ...any) {
 
 func (x *extractor) one(m *member.Member) {
 	name := m.Name
+	if strings.HasPrefix(name, "/") {
+		// GNU tar/cpio default: strip absolute member names down to
+		// relative ones rather than skipping them.
+		x.warnf("member %s: stripping leading '/' from member name", name)
+		name = strings.TrimPrefix(name, "/")
+	}
 	if !pat.IncludeMatch(x.o.Include, name) {
 		return
 	}
@@ -192,9 +200,27 @@ func (x *extractor) record(orig, disp string, m *member.Member, dest string) {
 	}
 }
 
-func (x *extractor) extractDir(m *member.Member, dest string) {
+// ensureParent creates (or, with NoDirs, requires) the parent
+// directory of dest, guarding against symlink traversal below the
+// extraction base.
+func (x *extractor) ensureParent(m *member.Member, dest string) bool {
+	if x.o.NoDirs {
+		parent := filepath.Dir(dest)
+		if fi, err := os.Lstat(parent); err != nil || !fi.IsDir() {
+			x.warnf("member %s skipped: %s does not exist (use -d to create leading directories)", m.Name, parent)
+			return false
+		}
+		return true
+	}
 	if _, err := safepath.EnsureParent(x.base, dest, x.o.Unsafe); err != nil {
 		x.warnf("member %s skipped: %v", m.Name, err)
+		return false
+	}
+	return true
+}
+
+func (x *extractor) extractDir(m *member.Member, dest string) {
+	if !x.ensureParent(m, dest) {
 		return
 	}
 	if fi, err := os.Lstat(dest); err == nil {
@@ -212,8 +238,7 @@ func (x *extractor) extractDir(m *member.Member, dest string) {
 }
 
 func (x *extractor) extractFile(m *member.Member, dest string) {
-	if _, err := safepath.EnsureParent(x.base, dest, x.o.Unsafe); err != nil {
-		x.warnf("member %s skipped: %v", m.Name, err)
+	if !x.ensureParent(m, dest) {
 		return
 	}
 	ok, dest := x.decide(m, dest, false)
@@ -243,8 +268,7 @@ func (x *extractor) extractSymlink(m *member.Member, dest string) {
 		x.warnf("member %s: stripping leading '/' from link target %s", m.Name, target)
 		target = strings.TrimPrefix(target, "/")
 	}
-	if _, err := safepath.EnsureParent(x.base, dest, x.o.Unsafe); err != nil {
-		x.warnf("member %s skipped: %v", m.Name, err)
+	if !x.ensureParent(m, dest) {
 		return
 	}
 	ok, dest := x.decide(m, dest, false)
@@ -263,8 +287,7 @@ func (x *extractor) extractHardLink(m *member.Member, dest string) {
 		x.warnf("member %s skipped: hard-link target %q was not extracted", m.Name, m.LinkName)
 		return
 	}
-	if _, err := safepath.EnsureParent(x.base, dest, x.o.Unsafe); err != nil {
-		x.warnf("member %s skipped: %v", m.Name, err)
+	if !x.ensureParent(m, dest) {
 		return
 	}
 	ok, dest := x.decide(m, dest, false)
@@ -278,8 +301,7 @@ func (x *extractor) extractHardLink(m *member.Member, dest string) {
 }
 
 func (x *extractor) extractSpecial(m *member.Member, dest, what string) {
-	if _, err := safepath.EnsureParent(x.base, dest, x.o.Unsafe); err != nil {
-		x.warnf("member %s skipped: %v", m.Name, err)
+	if !x.ensureParent(m, dest) {
 		return
 	}
 	ok, dest := x.decide(m, dest, false)
@@ -305,7 +327,11 @@ func (x *extractor) decide(m *member.Member, dest string, isDir bool) (bool, str
 		x.warnf("member %s skipped: %s already exists", m.Name, dest)
 		return false, dest
 	case OvIfOlder:
-		if fi.ModTime().After(m.ModTime) {
+		// Only regular files carry a comparable mtime: symlinks (whose
+		// times are never restored) and specials are simply replaced.
+		// Compare at the second precision containers store; nanosecond
+		// comparison would make every equal-mtime file look newer.
+		if fi.Mode().IsRegular() && fi.ModTime().Unix() > m.ModTime.Unix() {
 			x.warnf("member %s skipped: %s is newer (use -u to replace)", m.Name, dest)
 			return false, dest
 		}

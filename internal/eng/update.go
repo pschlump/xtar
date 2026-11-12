@@ -11,6 +11,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/pat"
 	"github.com/pschlump/xtar/internal/tarfmt"
@@ -54,8 +55,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	if len(a.Layers) > 0 {
 		return nil, fmt.Errorf("%s: cannot update compressed archives", o.Path)
 	}
-	if a.Format != "tar" {
-		return nil, fmt.Errorf("%s: only tar archives can be updated in place (this is %s)", o.Path, a.Format)
+	if a.Format != "tar" && a.Format != "cpio" {
+		return nil, fmt.Errorf("%s: only tar and cpio archives can be updated in place (this is %s)", o.Path, a.Format)
 	}
 
 	res := &UpdateResult{}
@@ -78,8 +79,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		if sa.Format != "tar" || len(sa.Layers) > 0 {
-			return nil, fmt.Errorf("%s: only plain tar archives can be concatenated", src)
+		if len(sa.Layers) > 0 || (sa.Format != "tar" && sa.Format != "cpio") {
+			return nil, fmt.Errorf("%s: only plain tar and cpio archives can be concatenated", src)
 		}
 		mems = append(mems, sa.Members...)
 		res.Concatenated += len(sa.Members)
@@ -101,8 +102,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 			}
 			keep := make([]member.Member, 0, len(fresh))
 			for _, m := range fresh {
-				if at, ok := archived[m.Name]; ok && !m.ModTime.After(at) {
-					continue // the archived copy is at least as new
+				if at, ok := archived[m.Name]; ok && m.ModTime.Unix() <= at.Unix() {
+					continue // the archived copy is at least as new (container mtime precision is seconds)
 				}
 				keep = append(keep, m)
 			}
@@ -116,7 +117,13 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	if format == "" {
 		format = a.Variant
 	}
-	blob, err := tarfmt.Build(format, mems)
+	var blob []byte
+	switch a.Format {
+	case "tar":
+		blob, err = tarfmt.Build(format, mems)
+	case "cpio":
+		blob, err = cpiofmt.Build(format, mems)
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -30,7 +30,7 @@ func main() {
 	case "xtar":
 		code = cli.Xtar(name, argv)
 	case "cpio":
-		code = cli.NotYet(name, "cpio", "M2")
+		code = cli.Cpio(name, argv)
 	case "zip", "zipinfo", "unzip":
 		code = cli.NotYet(name, name, "M3")
 	case "7z", "7za", "7zr":
