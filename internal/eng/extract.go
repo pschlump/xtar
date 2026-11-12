@@ -361,6 +361,9 @@ func (x *extractor) promptReplace(m *member.Member, dest string) (bool, string) 
 			x.o.Overwrite = OvAlways
 			return true, dest
 		case "n", "no", "":
+			if ans == "" {
+				x.warnf("member %s skipped: EOF on stdin at replace prompt", m.Name)
+			}
 			return false, dest
 		case "none", "q":
 			x.o.Overwrite = OvNever

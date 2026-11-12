@@ -36,6 +36,7 @@ type Opts struct {
 	Follow      bool // -h: dereference symlinks
 	Symlinks    bool // store symlinks as symlink members (tar/cpio default; zip needs -y)
 	Junk        bool // -j: store base names only
+	NoDirs      bool // -D: do not store directory entries at all
 
 	Exclude []*pat.Pattern
 	Include []*pat.Pattern
@@ -186,6 +187,9 @@ func (g *gatherer) addRoot(root string) {
 }
 
 func (g *gatherer) addEntry(name, fsPath string, fi os.FileInfo) {
+	if g.o.NoDirs && fi.IsDir() {
+		return
+	}
 	if g.o.Follow && fi.Mode()&os.ModeSymlink != 0 {
 		st, err := os.Stat(fsPath)
 		if err != nil {

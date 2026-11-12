@@ -15,8 +15,10 @@ import (
 
 	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
+	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/tarfmt"
 	"github.com/pschlump/xtar/internal/walk"
+	"github.com/pschlump/xtar/internal/zipfmt"
 )
 
 // CreateOpts is the whole create operation, dialect-independent.
@@ -29,7 +31,7 @@ type CreateOpts struct {
 	DefaultContainer string // dialect default when the name carries no container suffix
 	TarFormat        string // gnu | ustar | pax | v7
 	CpioFormat       string // newc | crc | odc
-	ZipMethod        uint16 // 0 store, 8 deflate, 12 bzip2
+	ZipMethod        int    // zipfmt.Method*: -1 (unset) defaults to deflate
 	ZipPassword      string
 	ZipComment       string
 	EmptyOK          bool
@@ -78,7 +80,20 @@ func Create(o *CreateOpts) (*Archive, error) {
 		a.Format = "cpio"
 		a.Variant = defaultStr(o.CpioFormat, "newc")
 	case "zip":
-		return nil, fmt.Errorf("%s archives are not supported yet — see the README roadmap", container)
+		method := o.ZipMethod
+		if method < 0 {
+			method = int(zipfmt.MethodDeflate)
+		}
+		for i := range mems {
+			mems[i].Method = uint16(method)
+			// Like Info-ZIP, directory entries are never encrypted.
+			if o.ZipPassword != "" && mems[i].Kind != member.Directory {
+				mems[i].Encrypted = true
+			}
+		}
+		blob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+		a.Format = "zip"
+		a.Variant = ""
 	case "":
 		if len(mems) != 1 {
 			return nil, errors.New("a bare compressed stream holds exactly one file")

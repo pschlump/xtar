@@ -31,10 +31,14 @@ func main() {
 		code = cli.Xtar(name, argv)
 	case "cpio":
 		code = cli.Cpio(name, argv)
-	case "zip", "zipinfo", "unzip":
-		code = cli.NotYet(name, name, "M3")
+	case "zip":
+		code = cli.Zip(name, argv)
+	case "unzip":
+		code = cli.Unzip(name, argv)
+	case "zipinfo":
+		code = cli.Zipinfo(name, argv)
 	case "7z", "7za", "7zr":
-		code = cli.NotYet(name, name, "M3")
+		code = cli.Sevenz(name, argv)
 	default:
 		fmt.Fprintf(os.Stderr, "%s: unknown dialect — invoke as tar, gtar, cpio, zip, unzip, 7z, 7za, 7zr, zipinfo, or xtar\n", name)
 		code = 2

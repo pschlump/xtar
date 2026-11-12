@@ -23,6 +23,7 @@ import (
 	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/sniff"
 	"github.com/pschlump/xtar/internal/tarfmt"
+	"github.com/pschlump/xtar/internal/zipfmt"
 )
 
 // maxPeel bounds the compression-layer onion so a crafted
@@ -40,6 +41,7 @@ type Archive struct {
 	Members  []member.Member
 	Notes    []string // non-fatal observations worth a warning line
 	Raw      []byte   // decoded container bytes
+	Comment  string   // zip archive comment
 	Password string
 	CompSize int64 // size of the outermost layer (the file on disk)
 }
@@ -160,6 +162,16 @@ func parseContainer(a *Archive, r sniff.Result, cur []byte) error {
 		a.Variant = c.Variant
 		a.Members = c.Members
 		a.Notes = append(a.Notes, c.Notes...)
+	case "zip":
+		z, err := zipfmt.Parse(cur, a.Password)
+		if err != nil {
+			return fmt.Errorf("%w", err)
+		}
+		a.Format = "zip"
+		a.Variant = z.Variant
+		a.Members = z.Members
+		a.Comment = z.Comment
+		a.Notes = append(a.Notes, z.Notes...)
 	default:
 		return UnsupportedError(r.Format)
 	}

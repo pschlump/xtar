@@ -16,6 +16,7 @@ import (
 	"github.com/pschlump/xtar/internal/pat"
 	"github.com/pschlump/xtar/internal/tarfmt"
 	"github.com/pschlump/xtar/internal/walk"
+	"github.com/pschlump/xtar/internal/zipfmt"
 )
 
 // UpdateOpts is the tar -r/-u/-A/--delete family: modify an existing
@@ -25,13 +26,15 @@ import (
 // The archive is rebuilt whole (the whole-buffer model); compressed
 // archives are refused the way GNU tar does.
 type UpdateOpts struct {
-	Path   string
-	Format string // write-variant override; "" keeps the source variant
-	Delete []*pat.Pattern
-	Concat []string // -A source archives
-	Walk   walk.Opts
-	Update bool // -u: skip files not newer than the archived copy
-	Warn   func(string)
+	Path      string
+	Format    string // write-variant override; "" keeps the source variant
+	Delete    []*pat.Pattern
+	Concat    []string // -A source archives
+	Walk      walk.Opts
+	Update    bool // -u: skip files not newer than the archived copy
+	Password  string
+	ZipMethod int // zipfmt.Method*; -1 (unset) defaults to deflate
+	Warn      func(string)
 }
 
 // UpdateResult reports what an Update did.
@@ -48,15 +51,15 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	if o.Path == "" || o.Path == "-" {
 		return nil, fmt.Errorf("options '-Aru' and '--delete' cannot work on an archive on standard input/output")
 	}
-	a, err := OpenFile(o.Path, "")
+	a, err := OpenFile(o.Path, o.Password)
 	if err != nil {
 		return nil, err
 	}
 	if len(a.Layers) > 0 {
 		return nil, fmt.Errorf("%s: cannot update compressed archives", o.Path)
 	}
-	if a.Format != "tar" && a.Format != "cpio" {
-		return nil, fmt.Errorf("%s: only tar and cpio archives can be updated in place (this is %s)", o.Path, a.Format)
+	if a.Format != "tar" && a.Format != "cpio" && a.Format != "zip" {
+		return nil, fmt.Errorf("%s: only tar, cpio, and zip archives can be updated in place (this is %s)", o.Path, a.Format)
 	}
 
 	res := &UpdateResult{}
@@ -113,6 +116,22 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 		res.Appended = len(fresh)
 	}
 
+	// Zip members that came from an archive keep their stored form
+	// (compressed bytes untouched; encrypted entries need no password);
+	// fresh members get the requested method.
+	for i := range mems {
+		if a.Format != "zip" {
+			continue
+		}
+		if mems[i].Raw != nil {
+			mems[i].KeepStored = true
+		} else if o.ZipMethod >= 0 {
+			mems[i].Method = uint16(o.ZipMethod)
+		} else {
+			mems[i].Method = zipfmt.MethodDeflate
+		}
+	}
+
 	format := o.Format
 	if format == "" {
 		format = a.Variant
@@ -123,6 +142,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 		blob, err = tarfmt.Build(format, mems)
 	case "cpio":
 		blob, err = cpiofmt.Build(format, mems)
+	case "zip":
+		blob, err = zipfmt.Build(mems, a.Comment, "")
 	}
 	if err != nil {
 		return nil, err
