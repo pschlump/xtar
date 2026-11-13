@@ -7,7 +7,6 @@ BSD 3 Clause Licensed.
 package eng
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -41,6 +40,13 @@ type CreateOpts struct {
 // Create gathers members and writes the archive, choosing container
 // and codec from the output name unless the opts override them.  It
 // returns the archive description (for verify and messages).
+//
+// The write side streams: tar and cpio members go through the format
+// writers and the compression layer straight to the file (or stdout),
+// so the container and compressed bytes never sit in memory — only
+// the gathered members do, bounded by the largest file.  zip still
+// materializes (its central directory is written last); a bare stream
+// is the one file's bytes through the codec.
 func Create(o *CreateOpts) (*Archive, error) {
 	container, codec := o.Container, o.Codec
 	if container == "" {
@@ -68,17 +74,38 @@ func Create(o *CreateOpts) (*Archive, error) {
 		return nil, errors.New("refusing to create an empty archive (no files were selected)")
 	}
 
-	var blob []byte
-	a := &Archive{Path: o.Path, Members: mems}
+	// Pre-flight the names (against io.Discard, before the output file
+	// is created) so a bad format or codec leaves nothing behind, the
+	// way GNU tar validates before opening its output.
+	cpioVariant := defaultStr(o.CpioFormat, "newc")
 	switch container {
 	case "tar":
-		blob, err = tarfmt.Build(o.TarFormat, mems)
+		if _, err := tarfmt.NewWriter(io.Discard, o.TarFormat); err != nil {
+			return nil, err
+		}
+	case "cpio":
+		if _, err := cpiofmt.NewWriter(io.Discard, cpioVariant); err != nil {
+			return nil, err
+		}
+	case "zip", "":
+	default:
+		return nil, fmt.Errorf("unknown container format %q", container)
+	}
+	if codec != "" {
+		if _, err := layer.NewWriterLevel(codec, io.Discard, o.Level); err != nil {
+			return nil, err
+		}
+	}
+
+	a := &Archive{Path: o.Path, Members: mems}
+	var zipBlob []byte
+	switch container {
+	case "tar":
 		a.Format = "tar"
 		a.Variant = defaultStr(o.TarFormat, "gnu")
 	case "cpio":
-		blob, err = cpiofmt.Build(defaultStr(o.CpioFormat, "newc"), mems)
 		a.Format = "cpio"
-		a.Variant = defaultStr(o.CpioFormat, "newc")
+		a.Variant = cpioVariant
 	case "zip":
 		method := o.ZipMethod
 		if method < 0 {
@@ -91,39 +118,128 @@ func Create(o *CreateOpts) (*Archive, error) {
 				mems[i].Encrypted = true
 			}
 		}
-		blob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+		zipBlob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+		if err != nil {
+			return nil, err
+		}
 		a.Format = "zip"
 		a.Variant = ""
 	case "":
 		if len(mems) != 1 {
 			return nil, errors.New("a bare compressed stream holds exactly one file")
 		}
-		blob = mems[0].Data
 		a.Format = "bare"
-	default:
-		return nil, fmt.Errorf("unknown container format %q", container)
-	}
-	if err != nil {
-		return nil, err
 	}
 
-	if codec != "" {
-		blob, err = layer.CompressLevel(codec, blob, o.Level)
+	// Open the output, count what leaves, wrap the codec around it.
+	var out io.Writer = os.Stdout
+	var closeFile func() error
+	if o.Path != "-" {
+		f, err := os.Create(o.Path)
 		if err != nil {
 			return nil, err
 		}
+		out = f
+		closeFile = f.Close
+	}
+	cw := &countWriter{w: out}
+	sink := io.Writer(cw)
+	var sw layer.StreamWriter
+	if codec != "" {
+		sw, err = layer.NewWriterLevel(codec, cw, o.Level)
+		if err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
+		sink = sw
 		a.Layers = []string{codec}
 	}
-	a.CompSize = int64(len(blob))
 
-	if o.Path == "-" {
-		_, err = io.Copy(os.Stdout, bytes.NewReader(blob))
-		return a, err
+	// Stream the container.  An error mid-archive leaves a partial
+	// output file (the GNU tar behavior), reported as the failure.
+	switch container {
+	case "tar":
+		tw, err := tarfmt.NewWriter(sink, o.TarFormat)
+		if err == nil {
+			for i := range mems {
+				if err = tw.WriteMember(&mems[i]); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				err = tw.Close()
+			}
+		}
+		if err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
+	case "cpio":
+		cw2, err := cpiofmt.NewWriter(sink, cpioVariant)
+		if err == nil {
+			for i := range mems {
+				if err = cw2.WriteMember(&mems[i]); err != nil {
+					break
+				}
+			}
+			if err == nil {
+				err = cw2.Close()
+			}
+		}
+		if err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
+	case "zip":
+		if _, err := sink.Write(zipBlob); err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
+	case "":
+		if _, err := sink.Write(mems[0].Data); err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
 	}
-	if err := os.WriteFile(o.Path, blob, 0o666); err != nil {
-		return nil, err
+
+	// Finish the compression stream and the file.
+	if sw != nil {
+		if err := sw.Close(); err != nil {
+			if closeFile != nil {
+				closeFile()
+			}
+			return nil, err
+		}
 	}
+	if closeFile != nil {
+		if err := closeFile(); err != nil {
+			return nil, err
+		}
+	}
+	a.CompSize = cw.n
 	return a, nil
+}
+
+// countWriter counts the bytes that leave, for CompSize reporting.
+type countWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 func defaultStr(s, d string) string {

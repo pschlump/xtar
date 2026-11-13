@@ -11,7 +11,9 @@ BSD 3 Clause Licensed.
 package cpiofmt
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -345,118 +347,123 @@ func checksum32(b []byte) uint32 {
 // Write side
 // ------------------------------------------------------------------
 
-// Build encodes mems in the given variant ("newc", "crc", or "odc").
-func Build(variant string, mems []member.Member) ([]byte, error) {
+// Writer serializes members as a cpio stream one at a time, so an
+// archive of any size can be written (through a compression layer, to
+// a pipe) without materializing the container.  Build is the
+// whole-buffer form and produces identical bytes.  The (dev,ino)
+// identity cpio link entries need is assigned as members arrive:
+// real inodes where the members carry them, a stable synthetic number
+// otherwise, and hard links sharing their target's — the same
+// order-dependent assignment the whole-buffer writer made upfront.
+type Writer struct {
+	w       io.Writer
+	err     error
+	variant string
+	ids     map[string]uint64 // member name -> assigned inode
+	next    uint64            // synthetic inode counter
+	remap   map[uint64]uint64 // odc: distinct identities -> 1..N
+}
+
+// NewWriter starts a cpio stream in variant ("newc", "crc", or "odc")
+// on w.
+func NewWriter(w io.Writer, variant string) (*Writer, error) {
 	switch variant {
-	case "newc", "crc":
-		return buildNewc(variant, mems)
-	case "odc":
-		return buildOdc(mems)
+	case "newc", "crc", "odc":
 	case "", "bin", "binary", "binary-swap":
 		return nil, fmt.Errorf("cpio: the binary variant is read-only")
+	default:
+		return nil, fmt.Errorf("cpio: unknown format %q", variant)
 	}
-	return nil, fmt.Errorf("cpio: unknown format %q", variant)
+	return &Writer{
+		w:       w,
+		variant: variant,
+		ids:     map[string]uint64{},
+		remap:   map[uint64]uint64{},
+	}, nil
 }
 
-// assignInodes gives every member the (dev,ino) identity cpio link
-// entries need: real inodes where the members carry them, a stable
-// synthetic number otherwise, and hard links sharing their target's.
-func assignInodes(mems []member.Member) []uint64 {
-	ids := map[string]uint64{}
-	next := uint64(0)
+func (c *Writer) write(p []byte) {
+	if c.err != nil {
+		return
+	}
+	if _, err := c.w.Write(p); err != nil {
+		c.err = err
+	}
+}
+
+// inode assigns m its cpio inode number.
+func (c *Writer) inode(m *member.Member) uint64 {
 	fresh := func() uint64 {
-		next++
-		return 90000 + next
+		c.next++
+		return 90000 + c.next
 	}
-	out := make([]uint64, len(mems))
-	for i := range mems {
-		m := &mems[i]
-		switch {
-		case m.Ino != 0:
-			out[i] = m.Ino
-			if _, ok := ids[m.Name]; !ok {
-				ids[m.Name] = m.Ino
-			}
-		case m.Kind == member.HardLink:
-			if v, ok := ids[m.LinkName]; ok {
-				out[i] = v
-			} else {
-				out[i] = fresh()
-			}
-		default:
-			out[i] = fresh()
-			ids[m.Name] = out[i]
+	ino := fresh()
+	switch {
+	case m.Ino != 0:
+		ino = m.Ino
+		if _, ok := c.ids[m.Name]; !ok {
+			c.ids[m.Name] = m.Ino
 		}
+	case m.Kind == member.HardLink:
+		if v, ok := c.ids[m.LinkName]; ok {
+			ino = v
+		}
+	default:
+		c.ids[m.Name] = ino
 	}
-	return out
+	return ino
 }
 
-func buildNewc(variant string, mems []member.Member) ([]byte, error) {
-	magic := "070701"
-	if variant == "crc" {
-		magic = "070702"
+// WriteMember appends one member (header, name, data, padding).
+func (c *Writer) WriteMember(m *member.Member) error {
+	if c.err != nil {
+		return c.err
 	}
-	inos := assignInodes(mems)
-	var out []byte
-	appendEntry := func(ino uint64, m *member.Member, name string, data []byte) {
-		nlink := m.NLink
-		if nlink < 1 {
-			nlink = 1
-		}
-		var check uint64
-		if variant == "crc" {
-			check = uint64(checksum32(data))
-		}
-		f := func(v uint64) string { return fmt.Sprintf("%08x", v) }
-		hdr := magic +
-			f(ino) + f(modeWord(m)) + f(uint64(uint32(m.UID))) + f(uint64(uint32(m.GID))) +
-			f(uint64(nlink)) + f(uint64(mtimeOf(m))) + f(uint64(len(data))) +
-			f(0) + f(0) + // archive member's own device: unused on write
-			f(uint64(m.DevMajor)) + f(uint64(m.DevMinor)) +
-			f(uint64(len(name)+1)) + f(check)
-		out = append(out, hdr...)
-		out = append(out, name...)
-		out = append(out, 0)
-		out = append(out, make([]byte, pad4(110+len(name)+1))...)
-		out = append(out, data...)
-		out = append(out, make([]byte, pad4(len(data)))...)
+	data := m.Data
+	if m.Kind == member.HardLink {
+		data = nil
 	}
-	for i := range mems {
-		m := &mems[i]
-		data := m.Data
-		if m.Kind == member.HardLink {
-			data = nil
+	ino := c.inode(m)
+	if c.variant == "odc" {
+		// The 6-octal-digit fields cannot hold a modern inode number
+		// (APFS inodes need 7+ digits, and %06o pads but never
+		// truncates), so remap distinct identities to 1..N — link
+		// families keep sharing.
+		if _, ok := c.remap[ino]; !ok {
+			c.remap[ino] = uint64(len(c.remap) + 1)
 		}
-		appendEntry(inos[i], m, m.Name, data)
+		ino = c.remap[ino]
 	}
-	appendEntry(0, &member.Member{}, Trailer, nil)
-	return out, nil
+	if err := c.writeEntry(ino, m, m.Name, data); err != nil {
+		return err
+	}
+	return c.err
 }
 
-func buildOdc(mems []member.Member) ([]byte, error) {
-	inos := assignInodes(mems)
-	// The 6-octal-digit fields cannot hold a modern inode number (APFS
-	// inodes need 7+ digits, and %06o pads but never truncates), so
-	// remap distinct identities to 1..N — link families keep sharing.
-	remap := map[uint64]uint64{}
-	for i, v := range inos {
-		if _, ok := remap[v]; !ok {
-			remap[v] = uint64(len(remap) + 1)
-		}
-		inos[i] = remap[v]
+// Close writes the trailer entry.  It does not close the underlying
+// writer.
+func (c *Writer) Close() error {
+	if c.err != nil {
+		return c.err
 	}
-	var out []byte
-	appendEntry := func(ino uint64, m *member.Member, name string, data []byte) error {
-		nlink := m.NLink
-		if nlink < 1 {
-			nlink = 1
-		}
+	if err := c.writeEntry(0, &member.Member{}, Trailer, nil); err != nil {
+		return err
+	}
+	return c.err
+}
+
+func (c *Writer) writeEntry(ino uint64, m *member.Member, name string, data []byte) error {
+	nlink := m.NLink
+	if nlink < 1 {
+		nlink = 1
+	}
+	if c.variant == "odc" {
 		if uint64(mtimeOf(m)) > 0o77777777777 || uint64(len(data)) > 0o77777777777 {
 			return fmt.Errorf("cpio: odc cannot hold %s (field overflow)", m.Name)
 		}
 		rdev := uint64(m.DevMajor)<<8 | uint64(m.DevMinor)
 		oct := func(v uint64, n int) string { return fmt.Sprintf("%0*o", n, v) }
-		out = append(out, "070707"...)
+		c.write([]byte("070707"))
 		for _, fld := range []struct {
 			v uint64
 			n int
@@ -467,27 +474,53 @@ func buildOdc(mems []member.Member) ([]byte, error) {
 			{uint64(mtimeOf(m)), 11},
 			{uint64(len(name) + 1), 6}, {uint64(len(data)), 11},
 		} {
-			out = append(out, oct(fld.v, fld.n)...)
+			c.write([]byte(oct(fld.v, fld.n)))
 		}
-		out = append(out, name...)
-		out = append(out, 0)
-		out = append(out, data...)
+		c.write([]byte(name))
+		c.write([]byte{0})
+		c.write(data)
 		return nil
 	}
+	magic := "070701"
+	if c.variant == "crc" {
+		magic = "070702"
+	}
+	var check uint64
+	if c.variant == "crc" {
+		check = uint64(checksum32(data))
+	}
+	f := func(v uint64) string { return fmt.Sprintf("%08x", v) }
+	hdr := magic +
+		f(ino) + f(modeWord(m)) + f(uint64(uint32(m.UID))) + f(uint64(uint32(m.GID))) +
+		f(uint64(nlink)) + f(uint64(mtimeOf(m))) + f(uint64(len(data))) +
+		f(0) + f(0) + // archive member's own device: unused on write
+		f(uint64(m.DevMajor)) + f(uint64(m.DevMinor)) +
+		f(uint64(len(name)+1)) + f(check)
+	c.write([]byte(hdr))
+	c.write([]byte(name))
+	c.write([]byte{0})
+	c.write(make([]byte, pad4(110+len(name)+1)))
+	c.write(data)
+	c.write(make([]byte, pad4(len(data))))
+	return nil
+}
+
+// Build encodes mems in the given variant ("newc", "crc", or "odc").
+func Build(variant string, mems []member.Member) ([]byte, error) {
+	var buf bytes.Buffer
+	w, err := NewWriter(&buf, variant)
+	if err != nil {
+		return nil, err
+	}
 	for i := range mems {
-		m := &mems[i]
-		data := m.Data
-		if m.Kind == member.HardLink {
-			data = nil
-		}
-		if err := appendEntry(inos[i], m, m.Name, data); err != nil {
+		if err := w.WriteMember(&mems[i]); err != nil {
 			return nil, err
 		}
 	}
-	if err := appendEntry(0, &member.Member{}, Trailer, nil); err != nil {
+	if err := w.Close(); err != nil {
 		return nil, err
 	}
-	return out, nil
+	return buf.Bytes(), nil
 }
 
 // modeWord folds the kind into the UNIX mode word cpio stores.

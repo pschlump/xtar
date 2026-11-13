@@ -8,6 +8,7 @@ package cpiofmt
 
 import (
 	"bytes"
+	"io"
 	"testing"
 	"time"
 
@@ -169,5 +170,44 @@ func TestVariantSniff(t *testing.T) {
 func TestBuildBinaryRefused(t *testing.T) {
 	if _, err := Build("bin", sampleMembers()); err == nil {
 		t.Fatal("binary write should be refused")
+	}
+}
+
+// TestStreamWriterMatchesBuild: the streaming Writer must produce the
+// same bytes as the whole-buffer Build for every write variant.
+func TestStreamWriterMatchesBuild(t *testing.T) {
+	mems := sampleMembers()
+	for _, variant := range []string{"newc", "crc", "odc"} {
+		want, err := Build(variant, mems)
+		if err != nil {
+			t.Fatalf("variant %q build: %v", variant, err)
+		}
+		var buf bytes.Buffer
+		w, err := NewWriter(&buf, variant)
+		if err != nil {
+			t.Fatalf("variant %q writer: %v", variant, err)
+		}
+		for i := range mems {
+			if err := w.WriteMember(&mems[i]); err != nil {
+				t.Fatalf("variant %q member %d: %v", variant, i, err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("variant %q close: %v", variant, err)
+		}
+		if !bytes.Equal(buf.Bytes(), want) {
+			t.Errorf("variant %q: streaming output differs from Build (%d vs %d bytes)",
+				variant, buf.Len(), len(want))
+		}
+	}
+}
+
+// TestStreamWriterBinaryRefused: the binary variants are read-only in
+// the streaming writer too.
+func TestStreamWriterBinaryRefused(t *testing.T) {
+	for _, variant := range []string{"", "bin", "binary", "binary-swap"} {
+		if _, err := NewWriter(io.Discard, variant); err == nil {
+			t.Errorf("variant %q: want read-only error", variant)
+		}
 	}
 }

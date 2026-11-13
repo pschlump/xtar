@@ -13,6 +13,7 @@ package tarfmt
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"path"
 	"strconv"
 	"strings"
@@ -273,9 +274,55 @@ func parsePaxRecords(data []byte) (map[string]string, error) {
 	return m, nil
 }
 
-// Build serializes members as a tar container.  format is "gnu"
-// (default), "ustar", "pax", or "v7".
-func Build(format string, mems []member.Member) ([]byte, error) {
+// errWriter is the write-side core: an io.Writer that remembers the
+// first error and the byte count, so the block emitters below can
+// ignore per-write errors and their callers check once.  It backs both
+// the streaming Writer and the whole-buffer Build.
+type errWriter struct {
+	w   io.Writer
+	n   int64
+	err error
+}
+
+func (ew *errWriter) Write(p []byte) (int, error) {
+	if ew.err != nil {
+		return 0, ew.err
+	}
+	n, err := ew.w.Write(p)
+	ew.n += int64(n)
+	if err != nil {
+		ew.err = err
+	}
+	return n, err
+}
+
+func (ew *errWriter) writeString(s string) {
+	if ew.err != nil {
+		return
+	}
+	var err error
+	if sw, ok := ew.w.(io.StringWriter); ok {
+		_, err = sw.WriteString(s)
+	} else {
+		_, err = ew.w.Write([]byte(s))
+	}
+	if err != nil {
+		ew.err = err
+	}
+}
+
+// Writer serializes members as a tar container one at a time, so an
+// archive of any size can be written (through a compression layer, to
+// a pipe) without materializing the container.  Build is the
+// whole-buffer form and produces identical bytes.
+type Writer struct {
+	ew     errWriter
+	format string
+}
+
+// NewWriter starts a tar stream in format ("gnu" default, "ustar",
+// "pax", "v7") on w.
+func NewWriter(w io.Writer, format string) (*Writer, error) {
 	switch format {
 	case "":
 		format = "gnu"
@@ -283,17 +330,50 @@ func Build(format string, mems []member.Member) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unknown tar format %q (want gnu, ustar, pax, or v7)", format)
 	}
+	return &Writer{ew: errWriter{w: w}, format: format}, nil
+}
+
+// WriteMember appends one member: extension records when the format
+// and name need them, the header block, then the content padded to a
+// block boundary.
+func (t *Writer) WriteMember(m *member.Member) error {
+	if t.ew.err != nil {
+		return t.ew.err
+	}
+	writeMember(&t.ew, t.format, m)
+	return t.ew.err
+}
+
+// Close writes the end-of-archive marker: two zero blocks, padded to
+// the traditional 20-block (10240-byte) record like GNU tar's default
+// (an empty archive is still a full 10240-byte file).  It does not
+// close the underlying writer.
+func (t *Writer) Close() error {
+	if t.ew.err != nil {
+		return t.ew.err
+	}
+	t.ew.Write(make([]byte, 2*blockSize))
+	if extra := t.ew.n % (20 * blockSize); extra != 0 {
+		t.ew.Write(make([]byte, 20*blockSize-extra))
+	}
+	return t.ew.err
+}
+
+// Build serializes members as a tar container in memory.  format is
+// "gnu" (default), "ustar", "pax", or "v7".
+func Build(format string, mems []member.Member) ([]byte, error) {
 	var buf bytes.Buffer
+	w, err := NewWriter(&buf, format)
+	if err != nil {
+		return nil, err
+	}
 	for i := range mems {
-		if err := writeMember(&buf, format, &mems[i]); err != nil {
+		if err := w.WriteMember(&mems[i]); err != nil {
 			return nil, err
 		}
 	}
-	// End-of-archive: two zero blocks, padded to the traditional
-	// 20-block (10240-byte) record like GNU tar's default.
-	buf.Write(make([]byte, 2*blockSize))
-	if extra := buf.Len() % (20 * blockSize); extra != 0 {
-		buf.Write(make([]byte, 20*blockSize-extra))
+	if err := w.Close(); err != nil {
+		return nil, err
 	}
 	return buf.Bytes(), nil
 }
@@ -308,7 +388,7 @@ type hdrSpec struct {
 	base256                     bool // allow base-256 for big numbers
 }
 
-func writeMember(buf *bytes.Buffer, format string, m *member.Member) error {
+func writeMember(w *errWriter, format string, m *member.Member) error {
 	name := m.Name
 	if m.Kind == member.Directory && !strings.HasSuffix(name, "/") {
 		name += "/"
@@ -322,10 +402,10 @@ func writeMember(buf *bytes.Buffer, format string, m *member.Member) error {
 	switch format {
 	case "gnu":
 		if len(name) > 100 {
-			writeGNURecord(buf, 'L', name)
+			writeGNURecord(w, 'L', name)
 		}
 		if len(link) > 100 {
-			writeGNURecord(buf, 'K', link)
+			writeGNURecord(w, 'K', link)
 		}
 	case "v7":
 		if len(name) > 100 || len(link) > 100 {
@@ -373,14 +453,14 @@ func writeMember(buf *bytes.Buffer, format string, m *member.Member) error {
 		if len(hdrName) > 100 {
 			hdrName = hdrName[:100]
 		}
-		if err := writeHeader(buf, format, hdrSpec{
+		if err := writeHeader(w, format, hdrSpec{
 			name: hdrName, mode: 0o644, size: int64(recs.Len()),
 			typeflag: 'x', mtime: m.ModTime.Unix(), base256: true,
 		}); err != nil {
 			return err
 		}
-		buf.Write(recs.Bytes())
-		padToBlock(buf, recs.Len())
+		w.Write(recs.Bytes())
+		padToBlock(w, recs.Len())
 	}
 
 	var typeflag byte = '0'
@@ -408,7 +488,7 @@ func writeMember(buf *bytes.Buffer, format string, m *member.Member) error {
 	if m.Kind != member.Regular && m.Kind != member.Directory {
 		size = 0
 	}
-	err := writeHeader(buf, format, hdrSpec{
+	err := writeHeader(w, format, hdrSpec{
 		name: base, link: link, prefix: prefix,
 		mode: int64(m.Mode & 0o7777), uid: int64(m.UID), gid: int64(m.GID),
 		size: size, mtime: m.ModTime.Unix(), typeflag: typeflag,
@@ -420,13 +500,13 @@ func writeMember(buf *bytes.Buffer, format string, m *member.Member) error {
 		return err
 	}
 	if m.Kind == member.Regular && len(m.Data) > 0 {
-		buf.Write(m.Data)
-		padToBlock(buf, len(m.Data))
+		w.Write(m.Data)
+		padToBlock(w, len(m.Data))
 	}
-	return nil
+	return w.err
 }
 
-func writeHeader(buf *bytes.Buffer, format string, s hdrSpec) error {
+func writeHeader(w *errWriter, format string, s hdrSpec) error {
 	// A zero time.Time (year 1) has a negative epoch; store 0.
 	if s.mtime < 0 {
 		s.mtime = 0
@@ -487,20 +567,20 @@ func writeHeader(buf *bytes.Buffer, format string, s hdrSpec) error {
 	blk[154] = 0
 	blk[155] = ' '
 
-	buf.Write(blk[:])
-	return nil
+	w.Write(blk[:])
+	return w.err
 }
 
 // writeGNURecord emits a GNU 'L' (long name) or 'K' (long link name)
 // extension record.
-func writeGNURecord(buf *bytes.Buffer, typeflag byte, value string) {
+func writeGNURecord(w *errWriter, typeflag byte, value string) {
 	s := value + "\x00"
-	_ = writeHeader(buf, "gnu", hdrSpec{
+	_ = writeHeader(w, "gnu", hdrSpec{
 		name: "././@LongLink", mode: 0o644, size: int64(len(s)),
 		typeflag: typeflag,
 	})
-	buf.WriteString(s)
-	padToBlock(buf, len(s))
+	w.writeString(s)
+	padToBlock(w, len(s))
 }
 
 // appendPaxRecord writes one "length key=value\n" record, the length
@@ -588,9 +668,9 @@ func padUp(n, bs int) int {
 	return (n + bs - 1) &^ (bs - 1)
 }
 
-func padToBlock(buf *bytes.Buffer, n int) {
+func padToBlock(w *errWriter, n int) {
 	if r := n % blockSize; r != 0 {
-		buf.Write(make([]byte, blockSize-r))
+		w.Write(make([]byte, blockSize-r))
 	}
 }
 

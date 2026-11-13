@@ -8,6 +8,7 @@ package tarfmt_test
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -255,5 +256,43 @@ func TestSystemTarInterop(t *testing.T) {
 		if err != nil || !bytes.Equal(got, []byte("zeta")) {
 			t.Errorf("%s: extracted content mismatch: %q %v", format, got, err)
 		}
+	}
+}
+
+// TestStreamWriterMatchesBuild: the streaming Writer must produce the
+// same bytes as the whole-buffer Build for every write format, member
+// at a time.
+func TestStreamWriterMatchesBuild(t *testing.T) {
+	mems := fixture()
+	for _, format := range []string{"", "gnu", "ustar", "pax", "v7"} {
+		want, err := tarfmt.Build(format, mems)
+		if err != nil {
+			t.Fatalf("format %q build: %v", format, err)
+		}
+		var buf bytes.Buffer
+		w, err := tarfmt.NewWriter(&buf, format)
+		if err != nil {
+			t.Fatalf("format %q writer: %v", format, err)
+		}
+		for i := range mems {
+			if err := w.WriteMember(&mems[i]); err != nil {
+				t.Fatalf("format %q member %d: %v", format, i, err)
+			}
+		}
+		if err := w.Close(); err != nil {
+			t.Fatalf("format %q close: %v", format, err)
+		}
+		if !bytes.Equal(buf.Bytes(), want) {
+			t.Errorf("format %q: streaming output differs from Build (%d vs %d bytes)",
+				format, buf.Len(), len(want))
+		}
+	}
+}
+
+// TestStreamWriterBadFormat: the constructor rejects unknown formats
+// before any write happens.
+func TestStreamWriterBadFormat(t *testing.T) {
+	if _, err := tarfmt.NewWriter(io.Discard, "bogus"); err == nil {
+		t.Error("unknown format: want error")
 	}
 }

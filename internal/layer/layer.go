@@ -4,14 +4,17 @@ Copyright (C) Philip Schlump, 2012-2026.
 BSD 3 Clause Licensed.
 */
 
-// Package layer adapts the whole-buffer pluto codecs into named
-// stream-compression layers the peel engine can apply.  The pluto
-// functions report failure by returning nil; the wrappers turn that
-// into an error.
+// Package layer adapts the pluto codecs into named stream-compression
+// layers the peel engine can apply: whole-buffer Compress/Expand pairs
+// and, since pluto grew streaming types, io.Reader/io.Writer forms.
+// The pluto whole-buffer functions report failure by returning nil;
+// the wrappers turn that into an error.  The streaming types report
+// errors the usual io way (sticky, from Read/Write/Close).
 package layer
 
 import (
 	"fmt"
+	"io"
 
 	"github.com/pschlump/pluto/bzip2"
 	"github.com/pschlump/pluto/compress_z"
@@ -111,4 +114,88 @@ func CompressLevel(name string, b []byte, level int) ([]byte, error) {
 		return nil, fmt.Errorf("unknown compression layer %q", name)
 	}
 	return c.CompressLevel(b, level)
+}
+
+// ------------------------------------------------------------------
+// Streaming (over the pluto NewReader/NewWriter types)
+// ------------------------------------------------------------------
+
+// StreamWriter is the streaming encoder every pluto codec writer
+// satisfies: Write buffers into the codec, Flush pushes a decodable
+// boundary where the format has one, Close finishes the stream (never
+// closes the underlying destination).
+type StreamWriter interface {
+	io.Writer
+	Flush() error
+	Close() error
+}
+
+// streamCodec is one codec's streaming constructors.
+type streamCodec struct {
+	newReader func(io.Reader) io.ReadCloser
+	newWriter func(io.Writer) StreamWriter
+	level     func(io.Writer, int) StreamWriter // bzip2 only
+}
+
+var streamByName = map[string]streamCodec{
+	"gzip": {
+		newReader: func(r io.Reader) io.ReadCloser { return gzip.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return gzip.NewWriter(w) },
+	},
+	"bzip2": {
+		newReader: func(r io.Reader) io.ReadCloser { return bzip2.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return bzip2.NewWriter(w) },
+		level:     func(w io.Writer, lvl int) StreamWriter { return bzip2.NewWriterLevel(w, lvl) },
+	},
+	"compress": {
+		newReader: func(r io.Reader) io.ReadCloser { return compress_z.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return compress_z.NewWriter(w) },
+	},
+	"lz4": {
+		newReader: func(r io.Reader) io.ReadCloser { return lz4.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return lz4.NewWriter(w) },
+	},
+	"zlib": {
+		newReader: func(r io.Reader) io.ReadCloser { return zlib.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return zlib.NewWriter(w) },
+	},
+	"deflate": {
+		newReader: func(r io.Reader) io.ReadCloser { return deflate.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return deflate.NewWriter(w) },
+	},
+}
+
+// NewReader wraps r in the named codec's streaming decoder.  Errors —
+// corruption (wrapping the codec's ErrMalformed) or truncation
+// (io.ErrUnexpectedEOF) — surface from Read, sticky, exactly as the
+// whole-buffer Expand's nil does, and Close reports them.
+func NewReader(name string, r io.Reader) (io.ReadCloser, error) {
+	sc, ok := streamByName[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown compression layer %q", name)
+	}
+	return sc.newReader(r), nil
+}
+
+// NewWriter wraps w in the named codec's streaming encoder.
+func NewWriter(name string, w io.Writer) (StreamWriter, error) {
+	sc, ok := streamByName[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown compression layer %q", name)
+	}
+	return sc.newWriter(w), nil
+}
+
+// NewWriterLevel is NewWriter with a compression level where the codec
+// has one (bzip2 -1..-9); other levels fall back to the codec default,
+// as the whole-buffer CompressLevel does.
+func NewWriterLevel(name string, w io.Writer, level int) (StreamWriter, error) {
+	sc, ok := streamByName[name]
+	if !ok {
+		return nil, fmt.Errorf("unknown compression layer %q", name)
+	}
+	if sc.level != nil && level >= 1 && level <= 9 {
+		return sc.level(w, level), nil
+	}
+	return sc.newWriter(w), nil
 }
