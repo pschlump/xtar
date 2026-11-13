@@ -147,6 +147,7 @@ func Xtar(name string, argv []string) int {
 		}
 		wopts := walk.Opts{
 			Files:        operands[1:],
+			NamePolicy:   walk.TarNames, // names as typed, the tar policy
 			Recurse:      true,
 			Symlinks:     true,
 			Exclude:      exclPats,

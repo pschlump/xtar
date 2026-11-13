@@ -241,12 +241,11 @@ func Parse(b []byte) (*Archive, error) {
 	return a, nil
 }
 
-// cleanName strips the "./" prefixes and leading "/" GNU tar warns
-// about, and the trailing "/" of directory entries.
+// cleanName strips the leading "/" GNU tar warns about and the
+// trailing "/" of directory entries.  A leading "./" stays as stored:
+// GNU tar, bsdtar, and cpio keep names relative to "." verbatim
+// ("./f.txt"), so our own archives round-trip byte-stably.
 func cleanName(name string, a *Archive) string {
-	for strings.HasPrefix(name, "./") {
-		name = name[2:]
-	}
 	if strings.HasPrefix(name, "/") {
 		a.Notes = append(a.Notes, fmt.Sprintf("member %q: stripping leading '/'", name))
 		name = strings.TrimPrefix(name, "/")

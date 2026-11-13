@@ -24,9 +24,38 @@ import (
 	"github.com/pschlump/xtar/internal/pat"
 )
 
+// NamePolicy selects how operand names become member names.  The
+// policies differ on a leading "./" (kept verbatim by GNU tar, bsdtar
+// and cpio; stripped by Info-ZIP), on a "." root operand (stored as a
+// member by tar; dropped by zip), and on a leading ".." (stripped with
+// a notice by GNU tar; kept by cpio).
+type NamePolicy int
+
+const (
+	// ZipNames is the Info-ZIP policy: strip leading "./" prefixes and
+	// store no "." root member.
+	ZipNames NamePolicy = iota
+	// TarNames is the GNU tar/bsdtar policy: keep names as typed
+	// relative to their base ("./f.txt", a "." root member) and strip
+	// leading ".." components with a notice.
+	TarNames
+	// CpioNames keeps every name as given ("./x", "../x"), stripping
+	// only a leading "/".
+	CpioNames
+)
+
 // Opts controls member gathering.
 type Opts struct {
-	Files     []string
+	Files []string
+	// Names holds the archive-name base for each Files entry: the
+	// operand as the user typed it, relative to its -C directory, while
+	// Files carries the filesystem path the walk reads.  A missing
+	// (nil or shorter) entry defaults to the path itself.
+	Names []string
+	// NamePolicy is the dialect's member-naming policy; ZipNames (the
+	// default) keeps the historical xtar behavior.
+	NamePolicy NamePolicy
+
 	StdinList bool // read the file list from stdin instead
 	NullSep   bool // stdin list is NUL-separated
 
@@ -52,15 +81,17 @@ type Opts struct {
 }
 
 type gatherer struct {
-	o           *Opts
-	out         *[]member.Member
-	seen        map[string]bool
-	links       map[[2]uint64]string // (dev, ino) -> first member name
-	users       map[int]string
-	groups      map[int]string
-	rootDev     uint64
-	haveRootDev bool
-	warnedAbs   bool
+	o                 *Opts
+	out               *[]member.Member
+	seen              map[string]bool
+	links             map[[2]uint64]string // (dev, ino) -> first member name
+	users             map[int]string
+	groups            map[int]string
+	rootDev           uint64
+	haveRootDev       bool
+	warnedAbs         bool
+	warnedDotDot      bool
+	warnedDotDotSlash bool
 }
 
 // Gather walks the operands and returns the members to store.
@@ -92,8 +123,12 @@ func Gather(o *Opts) ([]member.Member, error) {
 		users:  map[int]string{},
 		groups: map[int]string{},
 	}
-	for _, name := range names {
-		g.addRoot(name)
+	for i, name := range names {
+		base := name
+		if i < len(o.Names) && o.Names[i] != "" {
+			base = o.Names[i]
+		}
+		g.addRoot(name, base)
 	}
 	return out, nil
 }
@@ -110,36 +145,58 @@ func (g *gatherer) noticef(format string, args ...any) {
 	}
 }
 
-// slash cleans an operand path into an archive member name, stripping
-// "./" prefixes and — with a warning, the way GNU tar does — a leading
-// "/" from absolute operands.
+// slash cleans an operand path into an archive member name according
+// to the dialect's NamePolicy.  Every policy strips a leading "/"
+// with a one-time notice, the way GNU tar does.
 func (g *gatherer) slash(p string) string {
 	name := filepath.ToSlash(p)
-	for strings.HasPrefix(name, "./") {
-		name = name[2:]
+	switch g.o.NamePolicy {
+	case ZipNames:
+		for strings.HasPrefix(name, "./") {
+			name = name[2:]
+		}
+		if name == "." { // Info-ZIP stores no "." root entry
+			return ""
+		}
+	case TarNames:
+		for strings.HasPrefix(name, "../") {
+			if !g.warnedDotDotSlash {
+				g.warnedDotDotSlash = true
+				g.noticef("Removing leading `../' from member names")
+			}
+			name = name[3:]
+		}
+		if name == ".." {
+			if !g.warnedDotDot {
+				g.warnedDotDot = true
+				g.noticef("Removing leading `..' from member names")
+			}
+			name = "."
+		}
 	}
 	if strings.HasPrefix(name, "/") {
 		name = strings.TrimPrefix(name, "/")
 		if !g.warnedAbs {
 			g.warnedAbs = true
-			g.noticef("removing leading '/' from member names")
+			g.noticef("Removing leading `/' from member names")
 		}
 	}
 	return name
 }
 
-func (g *gatherer) addRoot(root string) {
-	for strings.HasPrefix(root, "./") {
-		root = root[2:]
-	}
-	fi, err := os.Lstat(root)
+// addRoot walks the filesystem path fsPath, naming members from base
+// (the operand as typed): the root itself is base, and each entry
+// below it is base plus its path relative to the root — so "-C d ."
+// reads d/ but stores "." and "./f.txt", matching GNU tar.
+func (g *gatherer) addRoot(fsPath, base string) {
+	fi, err := os.Lstat(fsPath)
 	if err != nil {
-		g.warnf("%s: cannot stat: %v", root, err)
+		g.warnf("%s: cannot stat: %v", fsPath, err)
 		return
 	}
 	if fi.IsDir() && g.o.Recurse && !g.o.NoRecursion {
 		g.rootDev, g.haveRootDev = statDev(fi)
-		err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(fsPath, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				g.warnf("%s: %v", p, err)
 				if d != nil && d.IsDir() {
@@ -147,10 +204,15 @@ func (g *gatherer) addRoot(root string) {
 				}
 				return nil
 			}
-			if p == "." {
-				return nil
+			name := base
+			if p != fsPath {
+				rel, rerr := filepath.Rel(fsPath, p)
+				if rerr != nil {
+					return nil // cannot happen inside our own walk
+				}
+				name = base + "/" + filepath.ToSlash(rel)
 			}
-			name := g.slash(p)
+			name = g.slash(name)
 			if name == "" {
 				return nil
 			}
@@ -179,11 +241,11 @@ func (g *gatherer) addRoot(root string) {
 			return nil
 		})
 		if err != nil {
-			g.warnf("%s: walk: %v", root, err)
+			g.warnf("%s: walk: %v", fsPath, err)
 		}
 		return
 	}
-	g.addEntry(g.slash(root), root, fi)
+	g.addEntry(g.slash(base), fsPath, fi)
 }
 
 func (g *gatherer) addEntry(name, fsPath string, fi os.FileInfo) {

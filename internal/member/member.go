@@ -69,9 +69,10 @@ func (k Kind) TypeBits() uint32 {
 	return 0
 }
 
-// Member is one archive entry.  Names are cleaned relative paths,
-// '/'-separated, with no leading "./" or "/" and no trailing '/'
-// (directories included).
+// Member is one archive entry.  Names are '/'-separated relative
+// paths with no leading "/" and no trailing '/' (directories
+// included); a leading "./" is kept as stored, the way GNU tar, bsdtar
+// and cpio keep names ("./f.txt", and "." for an archive root).
 type Member struct {
 	Name     string
 	LinkName string // symlink target, or hard-link target member name

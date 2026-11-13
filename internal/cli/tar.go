@@ -140,7 +140,9 @@ func Tar(name string, argv []string) int {
 		case o.short == 'f':
 			file = t.value
 		case o.short == 'C':
-			if chdir == "" {
+			// A running prefix, like cd: relative values stack, an
+			// absolute value replaces the prefix.
+			if chdir == "" || filepath.IsAbs(t.value) {
 				chdir = t.value
 			} else {
 				chdir = filepath.Join(chdir, t.value)
@@ -272,7 +274,11 @@ func Tar(name string, argv []string) int {
 		}
 	}
 	wopts := walk.Opts{
-		Files:        files,
+		Files: files,
+		// Member names are the operands as typed, relative to any -C
+		// directory; files[] holds the joined filesystem paths.
+		Names:        patternSrc,
+		NamePolicy:   walk.TarNames, // GNU tar keeps ./f.txt, stores the . root
 		NoRecursion:  noRecursion,
 		Recurse:      !noRecursion,
 		OneFS:        oneFS,

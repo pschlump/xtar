@@ -55,7 +55,6 @@ func selected(o *ListOpts, name string) (string, bool) {
 	if !pat.IncludeMatch(o.Include, name) || pat.ExcludeMatch(o.Exclude, name) {
 		return "", false
 	}
-	name = strings.TrimPrefix(name, "./")
 	if o.Strip > 0 {
 		parts := strings.Split(name, "/")
 		if len(parts) <= o.Strip {

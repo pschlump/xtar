@@ -129,10 +129,13 @@ func Cpio(name string, argv []string) int {
 	// directory operand (that is what find is for).
 	wopts := walk.Opts{
 		StdinList: true,
-		Follow:    dereference,
-		Symlinks:  !dereference,
-		Warn:      e.warn,
-		Notice:    e.note,
+		// cpio keeps names exactly as the list gives them ("./f.txt"
+		// from `find .`, even "../x"), the way cpio does.
+		NamePolicy: walk.CpioNames,
+		Follow:     dereference,
+		Symlinks:   !dereference,
+		Warn:       e.warn,
+		Notice:     e.note,
 	}
 	if verbose && !quiet {
 		wopts.OnName = func(n string) { fmt.Fprintln(os.Stderr, n) }

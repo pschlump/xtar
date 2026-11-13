@@ -163,6 +163,12 @@ func (x *extractor) one(m *member.Member) {
 		x.o.OnName(name)
 	}
 
+	// The archive root itself ("." or "./") names the destination
+	// directory, which already exists — GNU tar extracts it as a no-op.
+	if m.Kind == member.Directory && path.Clean(name) == "." {
+		return
+	}
+
 	dest, err := safepath.Join(x.base, name)
 	if err != nil {
 		x.warnf("member %s skipped: %v", m.Name, err)
