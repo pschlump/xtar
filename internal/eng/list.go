@@ -33,6 +33,7 @@ type ListOpts struct {
 	Include []*pat.Pattern
 	Exclude []*pat.Pattern
 	Strip   int
+	Warn    func(string) // notes discovered while streaming (truncated tail, …)
 }
 
 // List prints the member table in the dialect's style.
@@ -79,11 +80,11 @@ func ownerStr(m *member.Member, numeric bool) string {
 }
 
 func listTar(a *Archive, o *ListOpts) {
-	for i := range a.Members {
-		m := &a.Members[i]
+	n0 := len(a.Notes)
+	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
-			continue
+			return nil
 		}
 		if m.Kind == member.Directory {
 			name += "/"
@@ -99,15 +100,17 @@ func listTar(a *Archive, o *ListOpts) {
 		} else {
 			fmt.Fprintln(o.Out, name)
 		}
-	}
+		return nil
+	})
+	flushNotes(a, o.Warn, n0)
 }
 
 func listCpio(a *Archive, o *ListOpts) {
-	for i := range a.Members {
-		m := &a.Members[i]
+	n0 := len(a.Notes)
+	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
-			continue
+			return nil
 		}
 		if o.Verbose >= 1 {
 			fmt.Fprintf(o.Out, "%s %6d %s %s\n",
@@ -115,7 +118,9 @@ func listCpio(a *Archive, o *ListOpts) {
 		} else {
 			fmt.Fprintln(o.Out, name)
 		}
-	}
+		return nil
+	})
+	flushNotes(a, o.Warn, n0)
 }
 
 func listUnzip(a *Archive, o *ListOpts) {
@@ -128,11 +133,10 @@ func listUnzip(a *Archive, o *ListOpts) {
 		fmt.Fprintf(o.Out, "---------  ---------- -----   ----\n")
 	}
 	var total, nfiles, ndirs int
-	for i := range a.Members {
-		m := &a.Members[i]
+	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
-			continue
+			return nil
 		}
 		isDir := m.Kind == member.Directory
 		if isDir {
@@ -148,7 +152,8 @@ func listUnzip(a *Archive, o *ListOpts) {
 		} else {
 			fmt.Fprintf(o.Out, "%9d  %s   %s\n", m.DataSize(), m.ModTime.Format("2006-01-02 15:04"), name)
 		}
-	}
+		return nil
+	})
 	fmt.Fprintf(o.Out, "---------                     -------\n")
 	fmt.Fprintf(o.Out, "%9d                     %d file%s, %d director%s\n",
 		total, nfiles, plural(nfiles), ndirs, pluralY(ndirs))
@@ -156,11 +161,10 @@ func listUnzip(a *Archive, o *ListOpts) {
 
 func listZipinfo(a *Archive, o *ListOpts) {
 	fmt.Fprintf(o.Out, "Archive:  %s\n", displayName(a))
-	for i := range a.Members {
-		m := &a.Members[i]
+	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
-			continue
+			return nil
 		}
 		if m.Kind == member.Directory {
 			name += "/"
@@ -168,7 +172,8 @@ func listZipinfo(a *Archive, o *ListOpts) {
 		fmt.Fprintf(o.Out, "%s  %s unx %8d %s %s\n",
 			m.ModeString(), "1.0", m.DataSize(),
 			m.ModTime.Format("20060102.150405"), name)
-	}
+		return nil
+	})
 }
 
 func list7z(a *Archive, o *ListOpts) {
@@ -178,11 +183,10 @@ func list7z(a *Archive, o *ListOpts) {
 	fmt.Fprintf(o.Out, "Method = %s%s\n", strings.Join(a.Layers, ", "), containerMethod(a))
 	fmt.Fprintf(o.Out, "\n   Date      Time    Attr         Size   Compressed  Name\n")
 	fmt.Fprintf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
-	for i := range a.Members {
-		m := &a.Members[i]
+	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
-			continue
+			return nil
 		}
 		attr := "....A"
 		switch m.Kind {
@@ -193,7 +197,8 @@ func list7z(a *Archive, o *ListOpts) {
 		}
 		fmt.Fprintf(o.Out, "%s %s %12d %12s  %s\n",
 			m.ModTime.Format("2006-01-02 15:04:05"), attr, m.DataSize(), "-", name)
-	}
+		return nil
+	})
 	fmt.Fprintf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
 }
 
@@ -295,11 +300,12 @@ func Test(a *Archive, out io.Writer, verbose bool) error {
 }
 
 // Diff compares archive members against the filesystem under dir
-// (tar -d) and returns the number of differences.
+// (tar -d) and returns the number of differences.  Member content
+// streams, compared in chunks.
 func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
+	n0 := len(a.Notes)
 	diffs := 0
-	for i := range a.Members {
-		m := &a.Members[i]
+	_ = a.Each(func(m *member.Member, data io.Reader) error {
 		fsPath := filepath.Join(dir, filepath.FromSlash(m.Name))
 		fi, err := os.Lstat(fsPath)
 		name := m.Name
@@ -309,32 +315,23 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 		if err != nil {
 			fmt.Fprintf(out, "%s: does not exist\n", name)
 			diffs++
-			continue
+			return nil
 		}
 		switch m.Kind {
 		case member.Regular:
 			if !fi.Mode().IsRegular() {
 				fmt.Fprintf(out, "%s: type differs\n", name)
 				diffs++
-				continue
+				return nil
 			}
-			data, err := os.ReadFile(fsPath)
-			if err != nil {
-				fmt.Fprintf(out, "%s: cannot read: %v\n", name, err)
-				diffs++
-				continue
-			}
-			if len(data) != len(m.Data) {
+			if fi.Size() != m.DataSize() {
 				fmt.Fprintf(out, "%s: size differs\n", name)
 				diffs++
-				continue
+				return nil
 			}
-			for j := range data {
-				if data[j] != m.Data[j] {
-					fmt.Fprintf(out, "%s: contents differ\n", name)
-					diffs++
-					break
-				}
+			if !sameContent(fsPath, data) {
+				fmt.Fprintf(out, "%s: contents differ\n", name)
+				diffs++
 			}
 		case member.SymLink:
 			target, _ := os.Readlink(fsPath)
@@ -342,11 +339,61 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 				fmt.Fprintf(out, "%s: link target differs\n", name)
 				diffs++
 			}
+		case member.HardLink:
+			// GNU tar -d: the file must still share its inode with the
+			// link target (a copy breaks the link).
+			tfi, terr := os.Lstat(filepath.Join(dir, filepath.FromSlash(m.LinkName)))
+			if terr != nil || !os.SameFile(fi, tfi) {
+				fmt.Fprintf(out, "%s: not linked to %s\n", name, m.LinkName)
+				diffs++
+			}
 		}
 		if !fi.ModTime().Truncate(1e9).Equal(m.ModTime.Truncate(1e9)) && fi.ModTime().Unix() != m.ModTime.Unix() {
 			fmt.Fprintf(out, "%s: mod time differs\n", name)
 			diffs++
 		}
-	}
+		return nil
+	})
+	flushNotes(a, warn, n0)
 	return diffs
+}
+
+// sameContent compares a file against a member's data stream in
+// chunks.  A short or unreadable member stream counts as a
+// difference.
+func sameContent(fsPath string, data io.Reader) bool {
+	f, err := os.Open(fsPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var ab, bb [64 * 1024]byte
+	for {
+		an, aerr := io.ReadFull(data, ab[:])
+		bn, berr := io.ReadFull(f, bb[:])
+		if !bytesEqual(ab[:an], bb[:bn]) {
+			return false
+		}
+		switch {
+		case aerr == nil && berr == nil:
+			continue
+		case aerr == io.EOF && berr == io.EOF, aerr == io.ErrUnexpectedEOF && berr == io.ErrUnexpectedEOF:
+			return an == bn
+		default:
+			// one side ended before the other, or a read failed
+			return false
+		}
+	}
+}
+
+func bytesEqual(a, b []byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

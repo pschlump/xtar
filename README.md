@@ -480,13 +480,14 @@ not supported"`), never silently passes bytes through.
 
 ### Memory model (current constraint)
 
-pluto's codecs are whole-buffer (`[]byte → []byte`), not `io.Reader` streaming.
-xtar M1–M3 — the code that ships today — therefore materialize each archive
-layer/member in memory. This is fine for the sizes tar/cpio/zip workflows
-typically see, and it is called out honestly because `tar -xf` on a 40 GB
-tarball is a legitimate use. The streaming refactor (pluto
-`NewReader/NewWriter` pairs) is roadmap item M4 and unlocks large-archive
-operation plus true stdin streaming.
+pluto's codecs started whole-buffer (`[]byte → []byte`), and xtar M1–M3
+materialized each archive layer/member in memory. As of M4 the pluto codecs
+stream (`NewReader`/`NewWriter`), and xtar reads tar and cpio — compressed
+or not, from a file or a pipe — one member at a time through
+`eng.Archive.Each`: memory is bounded by the largest member, not the
+archive (a 40 GB tarball lists at ~6 MB RSS). Zip and bare streams stay
+whole-buffer by design: the zip central directory sits at the end of the
+file, and a bare compressed stream is a single member.
 
 ---
 
@@ -600,7 +601,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M1** | skeleton: argv[0] dispatch, sniffing/peel engine, `--sniff`; tar dialect read+write (v7/ustar/GNU read, GNU write; PAX read) over the gzip layer; extract/list/create with path safety | ✅ shipped — 9c0c43a |
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
-| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | next |
+| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | 🔄 in progress — pluto 370df4b + streaming create (44756aa) + streaming read (tar/cpio through `Archive.Each`; zip and bare stay whole-buffer by design) |
 | **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 

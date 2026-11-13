@@ -13,6 +13,7 @@ BSD 3 Clause Licensed.
 package layer
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/pschlump/pluto/gzip"
 	"github.com/pschlump/pluto/lz4"
 	"github.com/pschlump/pluto/zlib"
+	"github.com/pschlump/xtar/internal/sniff"
 )
 
 // Codec is one whole-buffer stream codec.  Compress never fails (the
@@ -198,4 +200,68 @@ func NewWriterLevel(name string, w io.Writer, level int) (StreamWriter, error) {
 		return sc.level(w, level), nil
 	}
 	return sc.newWriter(w), nil
+}
+
+// ------------------------------------------------------------------
+// Streaming peel
+// ------------------------------------------------------------------
+
+// maxPeel bounds how many nested compression layers Open will undo,
+// the same cap the whole-buffer decode loop uses.
+const maxPeel = 8
+
+// Open peels compression layers off the front of r without
+// materializing the stream: each layer is detected by peeking at what
+// the previous decode produces.  It returns the innermost decoded
+// stream (buffered, so sniffing or parsing it is cheap), the codec
+// names outermost-first, and the sniff result of the final
+// uncompressed payload (never Kind Compression).  Closing the returned
+// reader closes every codec reader in the chain; the underlying r is
+// never closed.
+func Open(r io.Reader) (io.ReadCloser, []string, sniff.Result, error) {
+	var codecs []string
+	var closers []io.Closer
+	cur := r
+	closeAll := func() {
+		for i := len(closers) - 1; i >= 0; i-- {
+			closers[i].Close()
+		}
+	}
+	for i := 0; ; i++ {
+		if i >= maxPeel {
+			closeAll()
+			return nil, nil, sniff.Result{}, fmt.Errorf("more than %d nested compression layers", maxPeel)
+		}
+		br := bufio.NewReaderSize(cur, 4096)
+		head, _ := br.Peek(512)
+		res := sniff.Detect(head)
+		if res.Kind != sniff.Compression {
+			return &chainReader{Reader: br, closers: closers}, codecs, res, nil
+		}
+		dr, err := NewReader(res.Format, br)
+		if err != nil {
+			closeAll()
+			return nil, nil, res, err
+		}
+		closers = append(closers, dr)
+		codecs = append(codecs, res.Format)
+		cur = dr
+	}
+}
+
+// chainReader is the innermost buffered stream of an Open chain; Close
+// releases every codec reader wrapping it.
+type chainReader struct {
+	io.Reader
+	closers []io.Closer
+}
+
+func (c *chainReader) Close() error {
+	var first error
+	for i := len(c.closers) - 1; i >= 0; i-- {
+		if err := c.closers[i].Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }

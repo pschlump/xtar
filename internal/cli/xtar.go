@@ -185,6 +185,7 @@ func Xtar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
+		defer a.Close()
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -215,6 +216,7 @@ func Xtar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
+		defer a.Close()
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -230,6 +232,7 @@ func Xtar(name string, argv []string) int {
 			Include: inc,
 			Exclude: exclPats,
 			Strip:   strip,
+			Warn:    e.warn,
 		})
 
 	case "t":
@@ -242,6 +245,7 @@ func Xtar(name string, argv []string) int {
 			if err := eng.Test(a, os.Stdout, verbosity > 0); err != nil {
 				e.warnf("%s: %v", p, err)
 			}
+			a.Close()
 		}
 	}
 

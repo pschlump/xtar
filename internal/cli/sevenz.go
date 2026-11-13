@@ -115,6 +115,7 @@ func Sevenz(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
+		defer a.Close()
 		if err := eng.Test(a, os.Stdout, true); err != nil {
 			return e.fatal("%v", err)
 		}
@@ -210,6 +211,7 @@ func sevenzExtract(e *env, archive string, files []string, password, outDir stri
 	if err != nil {
 		return e.fatal("%v", err)
 	}
+	defer a.Close()
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
@@ -237,9 +239,10 @@ func sevenzList(e *env, archive string, includes, excludes []*pat.Pattern) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
+	defer a.Close()
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
-	eng.List(a, &eng.ListOpts{Out: os.Stdout, Style: "7z", Verbose: 1, Include: includes, Exclude: excludes})
+	eng.List(a, &eng.ListOpts{Out: os.Stdout, Style: "7z", Verbose: 1, Include: includes, Exclude: excludes, Warn: e.warn})
 	return exitOK
 }

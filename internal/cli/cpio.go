@@ -206,6 +206,7 @@ func Cpio(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
+		defer a.Close() // releases the codec chain for streamed archives
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -222,7 +223,7 @@ func Cpio(name string, argv []string) int {
 			return e.fatal("%v", err)
 		}
 		if listOnly {
-			lo := &eng.ListOpts{Out: os.Stdout, Style: "cpio", Include: pats, Exclude: nil}
+			lo := &eng.ListOpts{Out: os.Stdout, Style: "cpio", Include: pats, Exclude: nil, Warn: e.warn}
 			if verbose {
 				lo.Verbose = 1
 			}

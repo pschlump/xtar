@@ -122,8 +122,15 @@ type ZipRaw struct {
 
 func (m *Member) IsDir() bool { return m.Kind == Directory }
 
-// DataSize is the member's content size.
-func (m *Member) DataSize() int64 { return int64(len(m.Data)) }
+// DataSize is the member's content size: the buffered data when the
+// member was loaded whole, otherwise the header's size field (streamed
+// members carry no Data).
+func (m *Member) DataSize() int64 {
+	if len(m.Data) > 0 {
+		return int64(len(m.Data))
+	}
+	return m.Size
+}
 
 // ModeString renders the permission bits in ls style, e.g.
 // "-rwsr-xr-x".  The type character comes from the Kind.

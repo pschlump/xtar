@@ -7,6 +7,7 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/pschlump/xtar/internal/eng"
+	"github.com/pschlump/xtar/internal/member"
 )
 
 // withStdin feeds s to the dialect's stdin for the duration of the test
@@ -57,10 +59,22 @@ func runCpioIn(t *testing.T, dir string, args ...string) int {
 	return Cpio("cpio", args)
 }
 
+// openArchive opens path and materializes its members (a streaming
+// archive only accumulates them as Each walks it).
 func openArchive(t *testing.T, path string) *eng.Archive {
 	t.Helper()
 	a, err := eng.OpenFile(path, "")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Each(func(m *member.Member, data io.Reader) error {
+		if m.Kind == member.Regular && m.Data == nil {
+			if _, err := io.ReadAll(data); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return a

@@ -51,9 +51,15 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	if o.Path == "" || o.Path == "-" {
 		return nil, fmt.Errorf("options '-Aru' and '--delete' cannot work on an archive on standard input/output")
 	}
-	a, err := OpenFile(o.Path, o.Password)
+	// The rewrite is whole-buffer by construction (members are rebuilt
+	// from scratch), so decode the source that way too.
+	data, err := os.ReadFile(o.Path)
 	if err != nil {
 		return nil, err
+	}
+	a, err := decode(data, o.Password, o.Path)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", o.Path, err)
 	}
 	if len(a.Layers) > 0 {
 		return nil, fmt.Errorf("%s: cannot update compressed archives", o.Path)
@@ -78,9 +84,13 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	}
 
 	for _, src := range o.Concat {
-		sa, err := OpenFile(src, "")
+		cdata, err := os.ReadFile(src)
 		if err != nil {
 			return nil, err
+		}
+		sa, err := decode(cdata, "", src)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", src, err)
 		}
 		if len(sa.Layers) > 0 || (sa.Format != "tar" && sa.Format != "cpio") {
 			return nil, fmt.Errorf("%s: only plain tar and cpio archives can be concatenated", src)

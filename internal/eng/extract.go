@@ -7,7 +7,9 @@ BSD 3 Clause Licensed.
 package eng
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -53,14 +55,15 @@ type ExtractOpts struct {
 }
 
 type extractor struct {
-	o       *ExtractOpts
-	a       *Archive
-	base    string
-	hardIdx map[string]string // member name -> extracted path
-	dataIdx map[string][]byte // member name -> data (for -O hard links)
-	dirFix  []dirFix
-	euid    int
-	um      fs.FileMode
+	o         *ExtractOpts
+	a         *Archive
+	base      string
+	hardIdx   map[string]string // member name -> extracted path
+	dataIdx   map[string][]byte // member name -> data (for -O hard links)
+	dirFix    []dirFix
+	euid      int
+	um        fs.FileMode
+	streaming bool // data arrives through Each; cache what -O needs
 }
 
 type dirFix struct {
@@ -69,7 +72,8 @@ type dirFix struct {
 	mtime time.Time
 }
 
-// Extract writes the archive's members under o.Dest.  Non-fatal
+// Extract writes the archive's members under o.Dest.  Members stream:
+// memory is bounded by the largest member, not the archive.  Non-fatal
 // problems (skipped unsafe members, failed optional restores) go to
 // o.Warn; the returned error is for fatal conditions only.
 func Extract(a *Archive, o *ExtractOpts) error {
@@ -77,24 +81,28 @@ func Extract(a *Archive, o *ExtractOpts) error {
 		o.Dest = "."
 	}
 	x := &extractor{
-		o:       o,
-		a:       a,
-		base:    o.Dest,
-		hardIdx: map[string]string{},
-		dataIdx: map[string][]byte{},
-		euid:    os.Geteuid(),
-		um:      currentUmask(),
+		o:         o,
+		a:         a,
+		base:      o.Dest,
+		hardIdx:   map[string]string{},
+		dataIdx:   map[string][]byte{},
+		euid:      os.Geteuid(),
+		um:        currentUmask(),
+		streaming: a.src != nil,
 	}
 	// The destination itself is trusted (the caller chose it); make
 	// sure it exists before members are laid out under it.
 	if err := os.MkdirAll(x.base, 0o755); err != nil {
 		return err
 	}
-	for i := range a.Members {
-		x.one(&a.Members[i])
-	}
+	n0 := len(a.Notes)
+	err := a.Each(func(m *member.Member, data io.Reader) error {
+		x.one(m, data)
+		return nil
+	})
 	x.finishDirs()
-	return nil
+	flushNotes(a, o.Warn, n0)
+	return err
 }
 
 func (x *extractor) warnf(format string, args ...any) {
@@ -103,7 +111,7 @@ func (x *extractor) warnf(format string, args ...any) {
 	}
 }
 
-func (x *extractor) one(m *member.Member) {
+func (x *extractor) one(m *member.Member, data io.Reader) {
 	name := m.Name
 	if strings.HasPrefix(name, "/") {
 		// GNU tar/cpio default: strip absolute member names down to
@@ -136,7 +144,18 @@ func (x *extractor) one(m *member.Member) {
 			if x.o.OnName != nil {
 				x.o.OnName(name)
 			}
-			os.Stdout.Write(m.Data)
+			if x.streaming {
+				// Cache the bytes as they pass so a later hard link
+				// (-O on a streamed archive) can still be served.
+				var buf bytes.Buffer
+				if _, err := io.Copy(io.MultiWriter(os.Stdout, &buf), data); err != nil {
+					x.warnf("member %s: read: %v", m.Name, err)
+				}
+				x.dataIdx[m.Name] = buf.Bytes()
+				x.dataIdx[name] = buf.Bytes()
+			} else {
+				os.Stdout.Write(m.Data)
+			}
 		} else if m.Kind == member.HardLink {
 			if d, ok := x.dataIdx[m.LinkName]; ok {
 				if x.o.OnName != nil {
@@ -179,7 +198,7 @@ func (x *extractor) one(m *member.Member) {
 	case member.Directory:
 		x.extractDir(m, dest)
 	case member.Regular:
-		x.extractFile(m, dest)
+		x.extractFile(m, dest, data)
 	case member.SymLink:
 		x.extractSymlink(m, dest)
 	case member.HardLink:
@@ -243,7 +262,7 @@ func (x *extractor) extractDir(m *member.Member, dest string) {
 	x.dirFix = append(x.dirFix, dirFix{path: dest, mode: x.applyUmask(member.ToFileMode(m.Mode)), mtime: m.ModTime})
 }
 
-func (x *extractor) extractFile(m *member.Member, dest string) {
+func (x *extractor) extractFile(m *member.Member, dest string, data io.Reader) {
 	if !x.ensureParent(m, dest) {
 		return
 	}
@@ -256,7 +275,7 @@ func (x *extractor) extractFile(m *member.Member, dest string) {
 		x.warnf("member %s: create: %v", m.Name, err)
 		return
 	}
-	if _, err := f.Write(m.Data); err != nil {
+	if _, err := io.Copy(f, data); err != nil {
 		f.Close()
 		x.warnf("member %s: write: %v", m.Name, err)
 		return

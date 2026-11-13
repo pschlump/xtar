@@ -296,3 +296,65 @@ func TestStreamWriterBadFormat(t *testing.T) {
 		t.Error("unknown format: want error")
 	}
 }
+
+func TestReaderLazyIteration(t *testing.T) {
+	b, err := tarfmt.Build("gnu", fixture())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := tarfmt.NewReader(bytes.NewReader(b))
+
+	// First member: read only part of its data, then skip to the next.
+	m, err := r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "dir" || m.Kind != member.Directory {
+		t.Fatalf("first member: %s/%v", m.Name, m.Kind)
+	}
+	m, err = r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "dir/file.txt" {
+		t.Fatalf("second member: %s", m.Name)
+	}
+	partial := make([]byte, 5)
+	if _, err := io.ReadFull(r, partial); err != nil {
+		t.Fatal(err)
+	}
+	if string(partial) != "hello" {
+		t.Fatalf("partial read: %q", partial)
+	}
+	// Skipping without draining must land on the next member cleanly.
+	m, err = r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Name != "dir/exec.sh" {
+		t.Fatalf("member after skip: %s", m.Name)
+	}
+	all, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(all) != "#!/bin/sh\n" {
+		t.Fatalf("full read after skip: %q", all)
+	}
+
+	// Walk to the end: EOF, and sticky.
+	for {
+		if _, err := r.Next(); err != nil {
+			if err != io.EOF {
+				t.Fatalf("end: %v", err)
+			}
+			break
+		}
+	}
+	if _, err := r.Next(); err != io.EOF {
+		t.Fatalf("EOF is not sticky: %v", err)
+	}
+	if r.Variant() != "gnu" {
+		t.Fatalf("variant: %s", r.Variant())
+	}
+}

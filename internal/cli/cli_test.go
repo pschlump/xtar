@@ -7,11 +7,13 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/pschlump/xtar/internal/eng"
+	"github.com/pschlump/xtar/internal/member"
 )
 
 func cliTree(t *testing.T) (src, work string) {
@@ -115,8 +117,17 @@ func TestTarTransform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if a.Members[0].Name != "renamed" {
-		t.Fatalf("transform did not apply: %q", a.Members[0].Name)
+	var firstName string
+	if err := a.Each(func(m *member.Member, _ io.Reader) error {
+		if firstName == "" {
+			firstName = m.Name
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if firstName != "renamed" {
+		t.Fatalf("transform did not apply: %q", firstName)
 	}
 
 	if code := Tar("tar", []string{"-cf", filepath.Join(work, "b.tar"), "--transform", "s/a/X", "proj"}); code != exitOK {

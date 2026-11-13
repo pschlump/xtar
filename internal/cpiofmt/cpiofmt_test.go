@@ -211,3 +211,73 @@ func TestStreamWriterBinaryRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestReaderLazyIterationAllVariants(t *testing.T) {
+	for _, variant := range []string{"newc", "crc", "odc"} {
+		t.Run(variant, func(t *testing.T) {
+			b, err := Build(variant, sampleMembers())
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := NewReader(bytes.NewReader(b))
+			if r.Variant() != "" {
+				t.Fatal("variant known before the first header")
+			}
+			// Partial read, skip, then a full read of the next member.
+			m, err := r.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Name != "d/" {
+				t.Fatalf("first member: %s", m.Name)
+			}
+			m, err = r.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Name != "d/a.txt" {
+				t.Fatalf("second member: %s", m.Name)
+			}
+			two := make([]byte, 2)
+			if _, err := io.ReadFull(r, two); err != nil {
+				t.Fatal(err)
+			}
+			if string(two) != "al" {
+				t.Fatalf("partial: %q", two)
+			}
+			m, err = r.Next()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.Name != "d/b.txt" {
+				t.Fatalf("member after skip: %s", m.Name)
+			}
+			all, err := io.ReadAll(r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(all) != "beta\n" {
+				t.Fatalf("after skip: %q", all)
+			}
+			// Walk to the trailer: EOF is clean and sticky, the
+			// variant was detected.
+			for {
+				if _, err := r.Next(); err != nil {
+					if err != io.EOF {
+						t.Fatalf("end: %v", err)
+					}
+					break
+				}
+			}
+			if _, err := r.Next(); err != io.EOF {
+				t.Fatalf("EOF not sticky: %v", err)
+			}
+			if r.Variant() != variant {
+				t.Fatalf("variant: %s", r.Variant())
+			}
+			if !r.SawTrailer() {
+				t.Fatal("trailer not seen")
+			}
+		})
+	}
+}

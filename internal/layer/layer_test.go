@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/pschlump/xtar/internal/layer"
+	"github.com/pschlump/xtar/internal/sniff"
 )
 
 func TestRoundTrip(t *testing.T) {
@@ -179,5 +180,72 @@ func TestStreamTruncatedAndUnknown(t *testing.T) {
 		if err := fn(); err == nil {
 			t.Error("unknown codec: want error")
 		}
+	}
+}
+
+func TestOpenPeels(t *testing.T) {
+	tar := make([]byte, 2048)
+	copy(tar[257:], "ustar\x00") // enough for sniff to call it a tar
+
+	// No layers: codecs empty, payload sniffed directly.
+	rc, codecs, res, err := layer.Open(bytes.NewReader(tar))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(codecs) != 0 || res.Format != "tar" {
+		t.Fatalf("plain: codecs=%v res=%+v", codecs, res)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil || len(got) != len(tar) {
+		t.Fatalf("plain read: %d bytes, err %v", len(got), err)
+	}
+	rc.Close()
+
+	// Nested: gzip(bzip2(tar)) peels both, outermost first.
+	inner, err := layer.Compress("bzip2", tar)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outer, err := layer.Compress("gzip", inner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc, codecs, res, err = layer.Open(bytes.NewReader(outer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	if len(codecs) != 2 || codecs[0] != "gzip" || codecs[1] != "bzip2" {
+		t.Fatalf("nested codecs: %v", codecs)
+	}
+	if res.Kind != sniff.Unknown && res.Format != "tar" && res.Format != "" {
+		t.Fatalf("nested sniff: %+v", res)
+	}
+	got, err = io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("nested read: %v", err)
+	}
+	if !bytes.Equal(got, tar) {
+		t.Fatalf("nested peel lost data (%d bytes)", len(got))
+	}
+}
+
+func TestOpenEmptyAndGarbage(t *testing.T) {
+	rc, codecs, res, err := layer.Open(bytes.NewReader(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	if len(codecs) != 0 || res.Kind != sniff.Unknown {
+		t.Fatalf("empty: codecs=%v res=%+v", codecs, res)
+	}
+
+	rc, codecs, res, err = layer.Open(strings.NewReader("definitely not an archive"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rc.Close()
+	if len(codecs) != 0 || res.Kind != sniff.Unknown {
+		t.Fatalf("garbage: codecs=%v res=%+v", codecs, res)
 	}
 }

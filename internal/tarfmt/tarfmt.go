@@ -11,6 +11,7 @@ BSD 3 Clause Licensed.
 package tarfmt
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -40,205 +41,431 @@ func (a *Archive) WriteFormat() string {
 	return a.Variant // "v7", "ustar", "gnu"
 }
 
-// Parse decodes a tar container from b.
+// Parse decodes a tar container from b, loading every member's data:
+// the whole-buffer form of the streaming Reader.
 func Parse(b []byte) (*Archive, error) {
-	a := &Archive{Variant: "v7"}
 	if len(b) == 0 {
 		return nil, fmt.Errorf("empty input")
 	}
-	pos := 0
-	pending := map[string]string{} // pax/GNU records for the next member
-	global := map[string]string{}
-	variantSet := false
-	paxSeen := false
-	for {
-		if pos+blockSize > len(b) {
-			if pos < len(b) && !allZero(b[pos:]) {
-				a.Notes = append(a.Notes, "trailing bytes after end-of-archive ignored")
-			}
-			break
-		}
-		blk := b[pos : pos+blockSize]
-		if allZero(blk) {
-			break // end-of-archive marker
-		}
-		if !sniff.HeaderChecksumOK(blk) {
-			return nil, fmt.Errorf("header checksum mismatch at offset %d (this does not look like a tar archive)", pos)
-		}
-		name := cstr(blk[0:100])
-		mode := numeric(blk[100:108])
-		uid := numeric(blk[108:116])
-		gid := numeric(blk[116:124])
-		size := numeric(blk[124:136])
-		mtime := numeric(blk[136:148])
-		typeflag := blk[156]
-		linkname := cstr(blk[157:257])
-		magic := string(blk[257:263])
-		uname := cstr(blk[265:297])
-		gname := cstr(blk[297:329])
-		devmajor := numeric(blk[329:337])
-		devminor := numeric(blk[337:345])
-		prefix := ""
-		if magic == "ustar\x00" {
-			prefix = cstr(blk[345:500])
-		}
-		if !variantSet {
-			switch magic {
-			case "ustar\x00":
-				a.Variant = "ustar"
-			case "ustar ":
-				a.Variant = "gnu"
-			default:
-				a.Variant = "v7"
-			}
-			variantSet = true
-		}
-		if size < 0 || pos+blockSize+int(size) > len(b) {
-			return nil, fmt.Errorf("truncated archive: member %q at offset %d", name, pos)
-		}
-		data := b[pos+blockSize : pos+blockSize+int(size)]
-		pos += blockSize + padUp(int(size), blockSize)
-
-		switch typeflag {
-		case 'x', 'X':
-			recs, err := parsePaxRecords(data)
-			if err != nil {
-				a.Notes = append(a.Notes, err.Error())
-				continue
-			}
-			for k, v := range recs {
-				pending[k] = v
-			}
-			paxSeen = true
-			continue
-		case 'g':
-			recs, err := parsePaxRecords(data)
-			if err != nil {
-				a.Notes = append(a.Notes, err.Error())
-				continue
-			}
-			for k, v := range recs {
-				global[k] = v
-			}
-			paxSeen = true
-			continue
-		case 'L': // GNU long name
-			pending["path"] = strings.TrimRight(string(data), "\x00")
-			continue
-		case 'K': // GNU long link name
-			pending["linkpath"] = strings.TrimRight(string(data), "\x00")
-			continue
-		case 'V':
-			a.Notes = append(a.Notes, "volume header ignored")
-			continue
-		case 'M':
-			a.Notes = append(a.Notes, "multi-volume member skipped")
-			continue
-		case 'D':
-			a.Notes = append(a.Notes, "dump directory entry ignored")
-			continue
-		case 'S':
-			return nil, fmt.Errorf("GNU sparse members are not supported yet (roadmap M4)")
-		}
-
-		rec := make(map[string]string, len(global)+len(pending))
-		for k, v := range global {
-			rec[k] = v
-		}
-		for k, v := range pending {
-			rec[k] = v
-		}
-		pending = map[string]string{}
-
-		m := member.Member{
-			Mode:     uint32(mode & 0o7777),
-			UID:      int(uid),
-			GID:      int(gid),
-			Uname:    uname,
-			Gname:    gname,
-			ModTime:  time.Unix(mtime, 0),
-			DevMajor: uint32(devmajor),
-			DevMinor: uint32(devminor),
-		}
-		full := name
-		if prefix != "" {
-			full = prefix + "/" + name
-		}
-		if p, ok := rec["path"]; ok {
-			full = p
-		}
-		if ln, ok := rec["linkpath"]; ok {
-			linkname = ln
-		}
-		full = cleanName(full, a)
-		m.Name = full
-		m.LinkName = linkname
-
-		switch typeflag {
-		case '1':
-			m.Kind = member.HardLink
-		case '2':
-			m.Kind = member.SymLink
-			m.Data = []byte(linkname)
-		case '3':
-			m.Kind = member.CharDev
-		case '4':
-			m.Kind = member.BlockDev
-		case '5':
-			m.Kind = member.Directory
-		case '6':
-			m.Kind = member.FIFO
-		default: // '0', '\0', '7', and anything unrecognized
-			m.Kind = member.Regular
-			if typeflag != '0' && typeflag != 0 && typeflag != '7' {
-				a.Notes = append(a.Notes, fmt.Sprintf("unknown typeflag %q treated as a regular file", typeflag))
-			}
-		}
-
-		// PAX numeric overrides.
-		if v, ok := rec["uid"]; ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-				m.UID = int(n)
-			}
-		}
-		if v, ok := rec["gid"]; ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-				m.GID = int(n)
-			}
-		}
-		if v, ok := rec["uname"]; ok {
-			m.Uname = v
-		}
-		if v, ok := rec["gname"]; ok {
-			m.Gname = v
-		}
-		if v, ok := rec["mtime"]; ok {
-			if f, err := strconv.ParseFloat(v, 64); err == nil {
-				sec := int64(f)
-				m.ModTime = time.Unix(sec, int64((f-float64(sec))*1e9))
-			}
-		}
-		if v, ok := rec["size"]; ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n != int64(len(data)) {
-				a.Notes = append(a.Notes, fmt.Sprintf("member %q: pax size %d replaced by stored %d", full, n, len(data)))
-			}
-		}
-		for k := range rec {
-			if strings.HasPrefix(k, "GNU.sparse.") {
-				return nil, fmt.Errorf("PAX sparse members are not supported yet (roadmap M4)")
-			}
-		}
-
-		if m.Kind == member.Regular || m.Kind == member.Directory {
-			m.Data = data
-			m.Size = int64(len(data))
-		}
-		a.Members = append(a.Members, m)
+	r := NewReader(bytes.NewReader(b))
+	mems, err := readAll(r)
+	if err != nil {
+		return nil, err
 	}
-	if paxSeen {
+	a := &Archive{Variant: r.Variant(), Members: mems, Notes: r.Notes()}
+	if r.PAXSeen() {
 		a.Variant += "+pax"
 	}
 	return a, nil
+}
+
+// readAll drains a Reader into fully-materialized members.
+func readAll(r *Reader) ([]member.Member, error) {
+	var out []member.Member
+	for {
+		m, err := r.Next()
+		if err == io.EOF {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if m.Kind == member.Regular || m.Kind == member.Directory {
+			data, err := io.ReadAll(r)
+			if err != nil {
+				return nil, err
+			}
+			if int64(len(data)) != m.Size {
+				return nil, fmt.Errorf("truncated archive: member %q", m.Name)
+			}
+			m.Data = data
+		}
+		out = append(out, *m)
+	}
+}
+
+// ------------------------------------------------------------------
+// Streaming read side
+// ------------------------------------------------------------------
+
+// Reader decodes a tar stream one member at a time: Next advances to
+// the next member and Read streams the current member's content.  An
+// archive of any size can be read through it (through a compression
+// layer, from a pipe) without materializing the container.  Regular
+// members arrive with Data unset (their content streams through
+// Read); a symlink's Data carries its target, as Parse produces.
+type Reader struct {
+	br         *bufio.Reader
+	pos        int64 // bytes consumed, for error messages
+	left       int64 // bytes remaining in the current member's data
+	pad        int64 // block padding after the current member's data
+	variant    string
+	variantSet bool
+	paxSeen    bool
+	pending    map[string]string // pax/GNU records for the next member
+	global     map[string]string
+	notes      []string
+	done       bool
+	err        error
+}
+
+// maxRecord caps the inline records (pax headers, GNU long names) so
+// a crafted size field cannot make the reader allocate wildly.
+const maxRecord = 1 << 20
+
+// NewReader starts decoding the tar stream on r.
+func NewReader(r io.Reader) *Reader {
+	return &Reader{
+		br:      bufio.NewReaderSize(r, 128*1024),
+		variant: "v7",
+		pending: map[string]string{},
+		global:  map[string]string{},
+	}
+}
+
+// Variant reports the format variant; "v7" until the first header.
+func (t *Reader) Variant() string { return t.variant }
+
+// PAXSeen reports whether any pax extended headers were read.
+func (t *Reader) PAXSeen() bool { return t.paxSeen }
+
+// Notes reports the non-fatal observations so far.
+func (t *Reader) Notes() []string { return t.notes }
+
+func (t *Reader) fail(err error) error {
+	if t.err == nil {
+		t.err = err
+	}
+	return t.err
+}
+
+// Next advances to the next member, discarding whatever is left of
+// the current one's data.  io.EOF ends the archive.
+func (t *Reader) Next() (*member.Member, error) {
+	if t.err != nil {
+		return nil, t.err
+	}
+	if t.done {
+		return nil, io.EOF
+	}
+	if err := t.skipData(); err != nil {
+		return nil, t.fail(err)
+	}
+	blk := make([]byte, blockSize)
+	for {
+		n, err := io.ReadFull(t.br, blk)
+		t.pos += int64(n)
+		if err != nil {
+			// Ended without an end-of-archive marker: the whole-buffer
+			// parse tolerated that, noting only a short non-zero tail.
+			if n > 0 && !allZero(blk[:n]) {
+				t.notes = append(t.notes, "trailing bytes after end-of-archive ignored")
+			}
+			t.done = true
+			return nil, io.EOF
+		}
+		if allZero(blk) {
+			t.probeTrailing()
+			t.done = true
+			return nil, io.EOF
+		}
+		if !sniff.HeaderChecksumOK(blk) {
+			return nil, t.fail(fmt.Errorf("header checksum mismatch at offset %d (this does not look like a tar archive)", t.pos-blockSize))
+		}
+		h := decodeHeader(blk)
+		if !t.variantSet {
+			switch h.magic {
+			case "ustar\x00":
+				t.variant = "ustar"
+			case "ustar ":
+				t.variant = "gnu"
+			default:
+				t.variant = "v7"
+			}
+			t.variantSet = true
+		}
+		if h.size < 0 {
+			return nil, t.fail(fmt.Errorf("member %q has a negative size", h.name))
+		}
+
+		// Pseudo-members: their content is part of the header stream
+		// and never surfaces as a member.
+		switch h.typeflag {
+		case 'x', 'X', 'g', 'L', 'K':
+			data, err := t.readInline(h.name, h.size)
+			if err != nil {
+				return nil, t.fail(err)
+			}
+			t.applyRecord(h.typeflag, data)
+			continue
+		case 'V', 'M', 'D':
+			if err := t.skipInline(h.name, h.size); err != nil {
+				return nil, t.fail(err)
+			}
+			switch h.typeflag {
+			case 'V':
+				t.notes = append(t.notes, "volume header ignored")
+			case 'M':
+				t.notes = append(t.notes, "multi-volume member skipped")
+			case 'D':
+				t.notes = append(t.notes, "dump directory entry ignored")
+			}
+			continue
+		case 'S':
+			return nil, t.fail(fmt.Errorf("GNU sparse members are not supported yet (roadmap M4)"))
+		}
+
+		m, err := t.buildMember(h)
+		if err != nil {
+			return nil, t.fail(err)
+		}
+		t.left = h.size
+		t.pad = int64(padUp(int(h.size), blockSize)) - h.size
+		return m, nil
+	}
+}
+
+// Read streams the current member's content.
+func (t *Reader) Read(p []byte) (int, error) {
+	if t.err != nil {
+		return 0, t.err
+	}
+	if t.left <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > t.left {
+		p = p[:t.left]
+	}
+	n, err := t.br.Read(p)
+	t.left -= int64(n)
+	if err == io.EOF {
+		if t.left > 0 { // the stream ended inside the member's data
+			return n, t.fail(io.ErrUnexpectedEOF)
+		}
+		if n > 0 {
+			return n, nil
+		}
+		return 0, io.EOF
+	}
+	return n, err
+}
+
+// probeTrailing mimics the whole-buffer parse's trailing-garbage
+// note: a short non-zero remainder after the end-of-archive marker is
+// reported; a full block or more of trailing bytes was silently
+// ignored there and still is.  Read errors end the probe quietly —
+// the codec layer reports them where they matter.
+func (t *Reader) probeTrailing() {
+	rest := make([]byte, blockSize)
+	n, _ := io.ReadFull(t.br, rest)
+	t.pos += int64(n)
+	if n > 0 && n < blockSize && !allZero(rest[:n]) {
+		t.notes = append(t.notes, "trailing bytes after end-of-archive ignored")
+	}
+}
+
+func (t *Reader) skipData() error {
+	n := t.left + t.pad
+	t.left, t.pad = 0, 0
+	if n <= 0 {
+		return nil
+	}
+	if _, err := io.CopyN(io.Discard, t.br, n); err != nil {
+		return fmt.Errorf("truncated archive: %w", err)
+	}
+	return nil
+}
+
+// readInline reads one pseudo-member's content and its block padding.
+func (t *Reader) readInline(name string, size int64) ([]byte, error) {
+	if size > maxRecord {
+		return nil, fmt.Errorf("member %q: extended record larger than %d bytes", name, maxRecord)
+	}
+	buf := make([]byte, size)
+	if _, err := io.ReadFull(t.br, buf); err != nil {
+		t.pos += size
+		return nil, fmt.Errorf("truncated archive: member %q: %w", name, err)
+	}
+	t.pos += size
+	t.discardPad(size)
+	return buf, nil
+}
+
+// skipInline discards one pseudo-member's content and padding.
+func (t *Reader) skipInline(name string, size int64) error {
+	t.pos += size
+	if _, err := io.CopyN(io.Discard, t.br, size); err != nil {
+		return fmt.Errorf("truncated archive: member %q: %w", name, err)
+	}
+	t.discardPad(size)
+	return nil
+}
+
+func (t *Reader) discardPad(size int64) {
+	pad := int64(padUp(int(size), blockSize)) - size
+	if pad > 0 {
+		io.CopyN(io.Discard, t.br, pad)
+		t.pos += pad
+	}
+}
+
+func (t *Reader) applyRecord(typeflag byte, data []byte) {
+	switch typeflag {
+	case 'x', 'X':
+		recs, err := parsePaxRecords(data)
+		if err != nil {
+			t.notes = append(t.notes, err.Error())
+			return
+		}
+		for k, v := range recs {
+			t.pending[k] = v
+		}
+		t.paxSeen = true
+	case 'g':
+		recs, err := parsePaxRecords(data)
+		if err != nil {
+			t.notes = append(t.notes, err.Error())
+			return
+		}
+		for k, v := range recs {
+			t.global[k] = v
+		}
+		t.paxSeen = true
+	case 'L': // GNU long name
+		t.pending["path"] = strings.TrimRight(string(data), "\x00")
+	case 'K': // GNU long link name
+		t.pending["linkpath"] = strings.TrimRight(string(data), "\x00")
+	}
+}
+
+// readHdr is one decoded 512-byte header block.
+type readHdr struct {
+	name, linkname      string
+	uname, gname, magic string
+	mode, uid, gid      int64
+	size, mtime         int64
+	devmajor, devminor  int64
+	typeflag            byte
+	prefix              string
+}
+
+func decodeHeader(blk []byte) (h readHdr) {
+	h.name = cstr(blk[0:100])
+	h.mode = numeric(blk[100:108])
+	h.uid = numeric(blk[108:116])
+	h.gid = numeric(blk[116:124])
+	h.size = numeric(blk[124:136])
+	h.mtime = numeric(blk[136:148])
+	h.typeflag = blk[156]
+	h.linkname = cstr(blk[157:257])
+	h.magic = string(blk[257:263])
+	h.uname = cstr(blk[265:297])
+	h.gname = cstr(blk[297:329])
+	h.devmajor = numeric(blk[329:337])
+	h.devminor = numeric(blk[337:345])
+	if h.magic == "ustar\x00" {
+		h.prefix = cstr(blk[345:500])
+	}
+	return h
+}
+
+// buildMember turns a header plus the accumulated pax/GNU records
+// into a member, exactly as the whole-buffer parse did.
+func (t *Reader) buildMember(h readHdr) (*member.Member, error) {
+	rec := make(map[string]string, len(t.global)+len(t.pending))
+	for k, v := range t.global {
+		rec[k] = v
+	}
+	for k, v := range t.pending {
+		rec[k] = v
+	}
+	t.pending = map[string]string{}
+
+	m := member.Member{
+		Mode:     uint32(h.mode & 0o7777),
+		UID:      int(h.uid),
+		GID:      int(h.gid),
+		Uname:    h.uname,
+		Gname:    h.gname,
+		ModTime:  time.Unix(h.mtime, 0),
+		DevMajor: uint32(h.devmajor),
+		DevMinor: uint32(h.devminor),
+	}
+	full := h.name
+	if h.prefix != "" {
+		full = h.prefix + "/" + h.name
+	}
+	if p, ok := rec["path"]; ok {
+		full = p
+	}
+	if ln, ok := rec["linkpath"]; ok {
+		h.linkname = ln
+	}
+	a := &Archive{Variant: t.variant}
+	full = cleanName(full, a)
+	t.notes = append(t.notes, a.Notes...)
+	m.Name = full
+	m.LinkName = h.linkname
+
+	switch h.typeflag {
+	case '1':
+		m.Kind = member.HardLink
+	case '2':
+		m.Kind = member.SymLink
+		m.Data = []byte(h.linkname)
+	case '3':
+		m.Kind = member.CharDev
+	case '4':
+		m.Kind = member.BlockDev
+	case '5':
+		m.Kind = member.Directory
+	case '6':
+		m.Kind = member.FIFO
+	default: // '0', '\0', '7', and anything unrecognized
+		m.Kind = member.Regular
+		if h.typeflag != '0' && h.typeflag != 0 && h.typeflag != '7' {
+			t.notes = append(t.notes, fmt.Sprintf("unknown typeflag %q treated as a regular file", h.typeflag))
+		}
+	}
+
+	// PAX numeric overrides.
+	if v, ok := rec["uid"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			m.UID = int(n)
+		}
+	}
+	if v, ok := rec["gid"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			m.GID = int(n)
+		}
+	}
+	if v, ok := rec["uname"]; ok {
+		m.Uname = v
+	}
+	if v, ok := rec["gname"]; ok {
+		m.Gname = v
+	}
+	if v, ok := rec["mtime"]; ok {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			sec := int64(f)
+			m.ModTime = time.Unix(sec, int64((f-float64(sec))*1e9))
+		}
+	}
+	if v, ok := rec["size"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n != h.size {
+			t.notes = append(t.notes, fmt.Sprintf("member %q: pax size %d replaced by stored %d", full, n, h.size))
+		}
+	}
+	for k := range rec {
+		if strings.HasPrefix(k, "GNU.sparse.") {
+			return nil, fmt.Errorf("PAX sparse members are not supported yet (roadmap M4)")
+		}
+	}
+
+	if m.Kind == member.Regular || m.Kind == member.Directory {
+		m.Size = h.size
+	}
+	return &m, nil
 }
 
 // cleanName strips the leading "/" GNU tar warns about and the

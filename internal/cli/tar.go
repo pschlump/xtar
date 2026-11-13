@@ -7,6 +7,7 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/pschlump/xtar/internal/eng"
+	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/walk"
 )
 
@@ -335,6 +337,7 @@ func Tar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
+		defer a.Close() // releases the codec chain for streamed archives
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -351,6 +354,7 @@ func Tar(name string, argv []string) int {
 				Include: inc,
 				Exclude: exclPats,
 				Strip:   strip,
+				Warn:    e.warn,
 			}
 			if lo.Verbose > 1 {
 				lo.Verbose = 1
@@ -470,19 +474,39 @@ func verifyArchive(e *env, file string, want *eng.Archive) int {
 		e.warnf("verify failed: %v", err)
 		return exitWarn
 	}
-	if len(got.Members) != len(want.Members) {
-		e.warnf("verify: member count differs (wrote %d, read %d)", len(want.Members), len(got.Members))
+	defer got.Close()
+	i := 0
+	var bad string
+	err = got.Each(func(m *member.Member, _ io.Reader) error {
+		if i >= len(want.Members) {
+			return errVerifyStop
+		}
+		w := &want.Members[i]
+		if w.Name != m.Name || w.Kind != m.Kind || w.DataSize() != m.DataSize() {
+			bad = w.Name
+			return errVerifyStop
+		}
+		i++
+		return nil
+	})
+	if err != nil && !errors.Is(err, errVerifyStop) {
+		e.warnf("verify failed: %v", err)
 		return exitWarn
 	}
-	for i := range want.Members {
-		w, g := &want.Members[i], &got.Members[i]
-		if w.Name != g.Name || w.Kind != g.Kind || w.DataSize() != g.DataSize() {
-			e.warnf("verify: %s differs", w.Name)
-			return exitWarn
+	if err != nil || i != len(want.Members) {
+		if bad == "" {
+			e.warnf("verify: member count differs (wrote %d, read %d)", len(want.Members), i)
+		} else {
+			e.warnf("verify: %s differs", bad)
 		}
+		return exitWarn
 	}
 	return exitOK
 }
+
+// errVerifyStop ends verifyArchive's walk early without reporting a
+// read failure.
+var errVerifyStop = errors.New("verify stop")
 
 func normalizeTarFormat(s string) (string, error) {
 	switch s {

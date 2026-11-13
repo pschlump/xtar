@@ -96,7 +96,9 @@ func Unzip(name string, argv []string) int {
 	if password == "" {
 		// unzip asks for the password when the archive needs one and
 		// none was supplied.
-		if _, err := eng.OpenFile(archive, ""); err != nil && strings.Contains(err.Error(), "password") {
+		if pa, err := eng.OpenFile(archive, ""); err == nil {
+			pa.Close()
+		} else if strings.Contains(err.Error(), "password") {
 			password = promptLine("Enter password: ")
 		}
 	}
@@ -104,6 +106,7 @@ func Unzip(name string, argv []string) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
+	defer a.Close()
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
@@ -125,7 +128,7 @@ func Unzip(name string, argv []string) int {
 			fmt.Fprintf(os.Stderr, "No errors detected in %s\n", archive)
 		}
 	case list, verbose && !print:
-		lo := &eng.ListOpts{Out: os.Stdout, Style: "unzip", Include: pats, Exclude: exPats}
+		lo := &eng.ListOpts{Out: os.Stdout, Style: "unzip", Include: pats, Exclude: exPats, Warn: e.warn}
 		if verbose {
 			lo.Verbose = 1
 		}
@@ -218,6 +221,7 @@ func Zipinfo(name string, argv []string) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
+	defer a.Close()
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
@@ -225,7 +229,7 @@ func Zipinfo(name string, argv []string) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
-	lo := &eng.ListOpts{Out: os.Stdout, Style: "zipinfo", Exclude: exPats}
+	lo := &eng.ListOpts{Out: os.Stdout, Style: "zipinfo", Exclude: exPats, Warn: e.warn}
 	switch {
 	case namesOnly:
 		lo.Verbose = 0

@@ -160,9 +160,13 @@ func TestExtractPatternsAndStrip(t *testing.T) {
 	}
 
 	// Strip one component: proj/a.txt becomes a.txt; proj/ itself
-	// vanishes.
+	// vanishes.  A streaming archive is one walk, so reopen it.
+	a2, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 	dst2 := filepath.Join(t.TempDir(), "strip")
-	if err := Extract(a, &ExtractOpts{Dest: dst2, Strip: 1, Warn: func(string) {}}); err != nil {
+	if err := Extract(a2, &ExtractOpts{Dest: dst2, Strip: 1, Warn: func(string) {}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dst2, "a.txt")); err != nil {
@@ -181,7 +185,14 @@ func TestExtractRejectsTraversal(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	a, err := OpenFile(out, "")
+	// Decode keeps the archive whole-buffer, so the hostile rename the
+	// next line plants is what Extract actually sees (a streaming
+	// archive's members only materialize as Each walks them).
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := Decode(data, "")
 	if err != nil {
 		t.Fatal(err)
 	}
