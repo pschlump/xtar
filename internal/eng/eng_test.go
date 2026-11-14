@@ -115,15 +115,46 @@ func TestCreateCompressedByExtension(t *testing.T) {
 	}
 }
 
-func TestCreateUnsupportedExtension(t *testing.T) {
+func TestCreateTarXz(t *testing.T) {
 	tree(t)
-	_, err := Create(&CreateOpts{
-		Path:             filepath.Join(t.TempDir(), "a.tar.xz"),
+	out := filepath.Join(t.TempDir(), "a.tar.xz")
+	a, err := Create(&CreateOpts{
+		Path:             out,
 		DefaultContainer: "tar",
 		Walk:             walkFiles([]string{"proj"}),
 	})
-	if err == nil || !strings.Contains(err.Error(), "xz") {
-		t.Fatalf("want xz unsupported error, got %v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Format != "tar" || len(a.Layers) != 1 || a.Layers[0] != "xz" {
+		t.Fatalf("resolve: format=%s layers=%v", a.Format, a.Layers)
+	}
+	if a.CompSize > 2048 {
+		t.Fatalf("xz archive unexpectedly large: %d", a.CompSize)
+	}
+	dst := filepath.Join(t.TempDir(), "out")
+	b, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	if err := Extract(b, &ExtractOpts{Dest: dst, Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "proj/a.txt")); err != nil {
+		t.Fatal("a.txt missing after xz round trip")
+	}
+}
+
+func TestCreateUnsupportedExtension(t *testing.T) {
+	tree(t)
+	_, err := Create(&CreateOpts{
+		Path:             filepath.Join(t.TempDir(), "a.tar.zst"),
+		DefaultContainer: "tar",
+		Walk:             walkFiles([]string{"proj"}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "zstd") {
+		t.Fatalf("want zstd unsupported error, got %v", err)
 	}
 }
 

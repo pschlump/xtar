@@ -117,7 +117,7 @@ Every archive xtar handles decomposes along two independent axes:
 1. **Container** — how members are catalogued: `tar` (v7/ustar/GNU/PAX),
    `cpio` (binary/odc/newc/crc), `zip`, `7z`.
 2. **Stream compression** — a whole-stream transform wrapped *around* a
-   container: gzip, bzip2, compress(.Z), lz4, (xz, zstd — planned).
+   container: gzip, bzip2, compress(.Z), lz4, xz (zstd — planned).
 
 tar-family tools put compression *outside* the container. zip and 7z compress
 *inside*, per member. Both axes can stack, so a file is an onion to peel:
@@ -152,7 +152,7 @@ ambiguity and drives *creation*; sniffing decides *reading*.
 | gzip          | `1f 8b`                                   | multi-member files supported             |
 | compress .Z   | `1f 9d` (or `1f a0`)                      | LSB-first LZW, block mode                |
 | bzip2         | `"BZh"` + level digit                     | block magic `1AY&SY` follows             |
-| xz            | `fd 37 7a 58 5a 00`                       | *planned*                                |
+| xz            | `fd 37 7a 58 5a 00`                       | xz (pluto, M5)                           |
 | zstd          | `28 b5 2f fd`                             | *planned*                                |
 | lz4 frame     | `04 22 4d 18`                             | skippable + concatenated frames ok       |
 | zip           | `PK\x03\x04` / `PK\x05\x06` (empty) / `PK\x07\x08` (spanned) | zip64 supported          |
@@ -481,13 +481,14 @@ variants (different wire formats) and are **not** used for any archive format
 
 | needed for        | missing codec      |
 |-------------------|--------------------|
-| `.tar.xz`, `.lzma`, zip-LZMA, 7z (LZMA/LZMA2) | xz/lzma (pluto) |
+| `.tar.xz`         | *shipped (pluto M5)* |
+| `.lzma`, zip-LZMA, 7z (LZMA/LZMA2) | lzma-alone (pluto) |
 | `.tar.zst`, zip-zstd | zstd (pluto)     |
 | 7z container      | 7z parsing + LZMA + BCJ filters + AES |
 | PPMd (7z, zip method 98) | PPMd (pluto)  |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
-`xtar: xz compression not yet supported — see README "What is deliberately
+`xtar: lzma/zstd compression not yet supported — see README "What is deliberately
 not supported"`), never silently passes bytes through.
 
 ### Memory model (current constraint)

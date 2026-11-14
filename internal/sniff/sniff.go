@@ -51,7 +51,7 @@ func Detect(b []byte) Result {
 	case has(b, 0, "\x04\x22\x4d\x18"):
 		return Result{"lz4", Compression, ""}
 	case has(b, 0, "\xfd7zXZ\x00"):
-		return Result{"xz", Unsupported, ""}
+		return Result{"xz", Compression, ""}
 	case has(b, 0, "\x28\xb5\x2f\xfd"):
 		return Result{"zstd", Unsupported, ""}
 	}

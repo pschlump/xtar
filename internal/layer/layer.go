@@ -22,6 +22,7 @@ import (
 	"github.com/pschlump/pluto/deflate"
 	"github.com/pschlump/pluto/gzip"
 	"github.com/pschlump/pluto/lz4"
+	"github.com/pschlump/pluto/xz"
 	"github.com/pschlump/pluto/zlib"
 	"github.com/pschlump/xtar/internal/sniff"
 )
@@ -78,6 +79,7 @@ var byName = map[string]Codec{
 	"lz4":      wrap("lz4", lz4.Compress, lz4.Expand),
 	"zlib":     wrap("zlib", zlib.Compress, zlib.Expand),
 	"deflate":  wrap("deflate", deflate.Compress, deflateExpand),
+	"xz":       wrap("xz", xz.Compress, xz.Expand),
 }
 
 func deflateExpand(b []byte) []byte {
@@ -164,6 +166,10 @@ var streamByName = map[string]streamCodec{
 	"deflate": {
 		newReader: func(r io.Reader) io.ReadCloser { return deflate.NewReader(r) },
 		newWriter: func(w io.Writer) StreamWriter { return deflate.NewWriter(w) },
+	},
+	"xz": {
+		newReader: func(r io.Reader) io.ReadCloser { return xz.NewReader(r) },
+		newWriter: func(w io.Writer) StreamWriter { return xz.NewWriter(w) },
 	},
 }
 

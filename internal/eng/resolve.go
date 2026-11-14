@@ -41,7 +41,13 @@ func ResolveByName(name, defaultContainer string) (Resolved, error) {
 		case sfx(base, ".tbz2"):
 			r.Container, r.Codec, base = "tar", "bzip2", trim(base, 5)
 			continue
-		case sfx(base, ".txz"), sfx(base, ".xz"), sfx(base, ".lzma"):
+		case sfx(base, ".txz"):
+			r.Container, r.Codec, base = "tar", "xz", trim(base, 4)
+			continue
+		case sfx(base, ".xz"):
+			r.Codec, base = "xz", trim(base, 3)
+			continue
+		case sfx(base, ".lzma"):
 			return r, UnsupportedError("xz")
 		case sfx(base, ".tzst"), sfx(base, ".zst"):
 			return r, UnsupportedError("zstd")

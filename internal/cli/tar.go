@@ -46,7 +46,6 @@ var tarSpecs = []opt{
 	{long: "bunzip2", short: 'j'},
 	{long: "xz", short: 'J'},
 	{long: "unxz", short: 'J'},
-	{long: "lzma", short: 'J'},
 	{long: "compress", short: 'Z'},
 	{long: "uncompress", short: 'Z'},
 	{long: "lz4"},
@@ -159,7 +158,9 @@ func Tar(name string, argv []string) int {
 		case o.short == 'Z':
 			codec = "compress"
 		case o.short == 'J':
-			return e.fatal("%v", eng.UnsupportedError("xz"))
+			codec = "xz"
+		case o.long == "lzma":
+			return e.fatal("%v", eng.UnsupportedError("lzma (the .lzma-alone codec is the next M5 step)"))
 		case o.long == "zstd":
 			return e.fatal("%v", eng.UnsupportedError("zstd"))
 		case o.long == "lzip":
