@@ -449,6 +449,10 @@ policy with dialect-native spellings.
   (passwords via `-P`/`-p`/prompt; shipped in M3); AES-encrypted zips and
   7z AES arrive with the 7z crypto work (M5–M6);
   tar/cpio have no encryption and never will (dialect errors if asked).
+  Password prompts hide input — terminal echo is off while the secret
+  is read (a plain read when stdin is not a terminal, so piped
+  passwords work); replace/confirm prompts keep echoing, matching the
+  native tools.
 * **Empty input.** `tar -tf` on an empty file errors with tar's message;
   an empty zip (`PK\x05\x06` only) lists zero members; both match the tools.
 
@@ -516,8 +520,6 @@ file, and a bare compressed stream is a single member.
   task that does not require the native container.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
   macOS resource forks — still out (sparse and PAX write shipped in M4).
-* **Hidden password entry.** Password and replace prompts read plain lines,
-  so typed input echoes; no-echo needs a terminal raw-mode layer (M4).
 
 ---
 
@@ -609,7 +611,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M1** | skeleton: argv[0] dispatch, sniffing/peel engine, `--sniff`; tar dialect read+write (v7/ustar/GNU read, GNU write; PAX read) over the gzip layer; extract/list/create with path safety | ✅ shipped — 9c0c43a |
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
-| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | 🔄 in progress — streaming create (44756aa) + streaming read (23c43ab) + PAX write, sparse tar (`-S`), `--encoding` (M4c); only terminal raw-mode (M4d) remains |
+| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 65e3b83 |
 | **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 

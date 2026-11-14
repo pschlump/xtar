@@ -144,8 +144,8 @@ func Zip(name string, argv []string) int {
 	files := operands[1:]
 
 	if encrypt && password == "" {
-		p1 := promptLine("Enter password: ")
-		p2 := promptLine("Verify password: ")
+		p1 := promptPassword("Enter password: ")
+		p2 := promptPassword("Verify password: ")
 		if p1 == "" || p1 != p2 {
 			return e.fatal("zero-length password or passwords do not match")
 		}

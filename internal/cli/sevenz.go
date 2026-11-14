@@ -50,7 +50,7 @@ func Sevenz(name string, argv []string) int {
 			outDir = body[1:]
 		case 'p':
 			if len(body) < 2 {
-				password = promptLine("Enter password (will not be hidden until the terminal layer lands): ")
+				password = promptPassword("Enter password: ")
 			} else {
 				password = body[1:]
 			}

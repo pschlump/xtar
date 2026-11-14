@@ -102,7 +102,7 @@ func Unzip(name string, argv []string) int {
 		if pa, err := eng.OpenFile(archive, ""); err == nil {
 			pa.Close()
 		} else if strings.Contains(err.Error(), "password") {
-			password = promptLine("Enter password: ")
+			password = promptPassword("Enter password: ")
 		}
 	}
 	a, err := eng.OpenFile(archive, password)

@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/pschlump/xtar/internal/pat"
+	"github.com/pschlump/xtar/internal/term"
 )
 
 // Exit codes: 0 success, 1 warnings, 2 fatal — the core every one of
@@ -60,12 +61,27 @@ func (e *env) fatal(format string, args ...any) int {
 // stdinReader buffers prompts across calls.
 var stdinReader = bufio.NewReader(os.Stdin)
 
-// promptLine asks on stderr and reads one line from stdin.  Single-key
-// (raw-mode) answering is deferred with the M4 streaming work; answers
-// are line-based for now.
+// promptLine asks on stderr and reads one line from stdin.  Answers
+// are line-based; plain (echoing) input — the answer is not a secret.
 func promptLine(question string) string {
 	fmt.Fprint(os.Stderr, question)
 	line, err := stdinReader.ReadString('\n')
+	if err != nil && line == "" {
+		return ""
+	}
+	return strings.TrimRight(line, "\r\n")
+}
+
+// promptPassword asks for a secret: terminal echo is off while the
+// line is read (a no-op when stdin is not a terminal, so a piped
+// password still works), and a newline lands after the hidden input
+// the way the native tools leave one.
+func promptPassword(question string) string {
+	restore := term.NoEcho()
+	fmt.Fprint(os.Stderr, question)
+	line, err := stdinReader.ReadString('\n')
+	restore()
+	fmt.Fprint(os.Stderr, "\n")
 	if err != nil && line == "" {
 		return ""
 	}
