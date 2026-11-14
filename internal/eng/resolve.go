@@ -48,7 +48,8 @@ func ResolveByName(name, defaultContainer string) (Resolved, error) {
 			r.Codec, base = "xz", trim(base, 3)
 			continue
 		case sfx(base, ".lzma"):
-			return r, UnsupportedError("xz")
+			r.Codec, base = "lzma", trim(base, 5)
+			continue
 		case sfx(base, ".tzst"), sfx(base, ".zst"):
 			return r, UnsupportedError("zstd")
 		case sfx(base, ".gz"):

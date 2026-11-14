@@ -117,7 +117,7 @@ Every archive xtar handles decomposes along two independent axes:
 1. **Container** — how members are catalogued: `tar` (v7/ustar/GNU/PAX),
    `cpio` (binary/odc/newc/crc), `zip`, `7z`.
 2. **Stream compression** — a whole-stream transform wrapped *around* a
-   container: gzip, bzip2, compress(.Z), lz4, xz (zstd — planned).
+   container: gzip, bzip2, compress(.Z), lz4, xz, lzma (zstd — planned).
 
 tar-family tools put compression *outside* the container. zip and 7z compress
 *inside*, per member. Both axes can stack, so a file is an onion to peel:
@@ -228,7 +228,7 @@ they don't conflict).
   `--overwrite`, `--skip-old-files`, `--strip-components=N`, `--exclude=PATTERN`,
   `-T/--files-from`, `--null`, `--transform`, `-w`, `-W/--verify`, `--totals`,
   `--numeric-owner`, `--owner/--group`, `--format=gnu|pax|ustar|v7`,
-  `-S/--sparse`, compression flags `-z -j -J --zstd -Z -a`.
+  `-S/--sparse`, compression flags `-z -j -J --lzma --zstd -Z -a`.
 * Auto-detect on read; auto-compress and format-by-extension on write.
 * Default write format is GNU (`gnu`) to match GNU tar; `--format` overrides.
 * Append/update/delete work only on uncompressed tar — a compressed or
@@ -481,7 +481,7 @@ variants (different wire formats) and are **not** used for any archive format
 
 | needed for        | missing codec      |
 |-------------------|--------------------|
-| `.tar.xz`         | *shipped (pluto M5)* |
+| `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
 | `.lzma`, zip-LZMA, 7z (LZMA/LZMA2) | lzma-alone (pluto) |
 | `.tar.zst`, zip-zstd | zstd (pluto)     |
 | 7z container      | 7z parsing + LZMA + BCJ filters + AES |
