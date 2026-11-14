@@ -253,7 +253,6 @@ func resolveZip64(e *cdEntry) {
 		}
 		if e.offset == max32 && q+8 <= p+4+sz {
 			e.offset = le.Uint64(e.extra[q:])
-			q += 8
 		}
 		return
 	}

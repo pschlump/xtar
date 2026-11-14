@@ -224,7 +224,7 @@ func Open(r io.Reader) (io.ReadCloser, []string, sniff.Result, error) {
 	cur := r
 	closeAll := func() {
 		for i := len(closers) - 1; i >= 0; i-- {
-			closers[i].Close()
+			_ = closers[i].Close() // best-effort teardown
 		}
 	}
 	for i := 0; ; i++ {

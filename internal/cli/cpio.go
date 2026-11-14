@@ -206,7 +206,7 @@ func Cpio(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
-		defer a.Close() // releases the codec chain for streamed archives
+		defer func() { _ = a.Close() }() // releases the codec chain for streamed archives
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}

@@ -149,7 +149,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 		sw, err = layer.NewWriterLevel(codec, cw, o.Level)
 		if err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}
@@ -174,7 +174,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 		}
 		if err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}
@@ -192,21 +192,21 @@ func Create(o *CreateOpts) (*Archive, error) {
 		}
 		if err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}
 	case "zip":
 		if _, err := sink.Write(zipBlob); err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}
 	case "":
 		if _, err := sink.Write(mems[0].Data); err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}
@@ -216,7 +216,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 	if sw != nil {
 		if err := sw.Close(); err != nil {
 			if closeFile != nil {
-				closeFile()
+				_ = closeFile() // teardown on the way to an error return
 			}
 			return nil, err
 		}

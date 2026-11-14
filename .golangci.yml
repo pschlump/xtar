@@ -1,0 +1,35 @@
+# golangci-lint configuration for `make lint` (golangci-lint v2).
+version: "2"
+
+issues:
+  # Report every instance of every finding.  The default cap of 3 per
+  # identical issue hid bulk findings in the pluto lint sweep; a
+  # fix-all pass has to see them all.
+  max-same-issues: 0
+
+linters:
+  exclusions:
+    rules:
+      # Deferred test cleanup (archive Close, temp-file Remove, the
+      # t.Chdir restore, setup WriteFile): the test verdict never
+      # depends on these errors.
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `.*Close` is not checked"
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `os.Remove` is not checked"
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `os.RemoveAll` is not checked"
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `os.Chdir` is not checked"
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `os.WriteFile` is not checked"
+      # Pipe-feed goroutines write test input and close: a blocked
+      # reader fails the test anyway.
+      - path: _test\.go
+        linters: [errcheck]
+        text: "Error return value of `.*Write` is not checked"

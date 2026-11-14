@@ -341,7 +341,7 @@ func Tar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
-		defer a.Close() // releases the codec chain for streamed archives
+		defer func() { _ = a.Close() }() // releases the codec chain for streamed archives
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -478,7 +478,7 @@ func verifyArchive(e *env, file string, want *eng.Archive) int {
 		e.warnf("verify failed: %v", err)
 		return exitWarn
 	}
-	defer got.Close()
+	defer func() { _ = got.Close() }()
 	i := 0
 	var bad string
 	err = got.Each(func(m *member.Member, _ io.Reader) error {

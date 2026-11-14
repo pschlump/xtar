@@ -140,7 +140,8 @@ func (x *extractor) one(m *member.Member, data io.Reader) {
 	}
 
 	if x.o.ToStdout {
-		if m.Kind == member.Regular {
+		switch m.Kind {
+		case member.Regular:
 			if x.o.OnName != nil {
 				x.o.OnName(name)
 			}
@@ -153,15 +154,17 @@ func (x *extractor) one(m *member.Member, data io.Reader) {
 				}
 				x.dataIdx[m.Name] = buf.Bytes()
 				x.dataIdx[name] = buf.Bytes()
-			} else {
-				os.Stdout.Write(m.Data)
+			} else if _, err := os.Stdout.Write(m.Data); err != nil {
+				x.warnf("member %s: write: %v", m.Name, err)
 			}
-		} else if m.Kind == member.HardLink {
+		case member.HardLink:
 			if d, ok := x.dataIdx[m.LinkName]; ok {
 				if x.o.OnName != nil {
 					x.o.OnName(name)
 				}
-				os.Stdout.Write(d)
+				if _, err := os.Stdout.Write(d); err != nil {
+					x.warnf("member %s: write: %v", m.Name, err)
+				}
 			}
 		}
 		x.record(m.Name, name, m, "")
@@ -283,12 +286,12 @@ func (x *extractor) extractFile(m *member.Member, dest string, data io.Reader) {
 				continue
 			}
 			if _, err := f.Seek(sp.Off, io.SeekStart); err != nil {
-				f.Close()
+				_ = f.Close()
 				x.warnf("member %s: seek: %v", m.Name, err)
 				return
 			}
 			if _, err := io.CopyN(f, data, sp.Len); err != nil {
-				f.Close()
+				_ = f.Close()
 				x.warnf("member %s: write: %v", m.Name, err)
 				return
 			}
@@ -297,7 +300,7 @@ func (x *extractor) extractFile(m *member.Member, dest string, data io.Reader) {
 			x.warnf("member %s: truncate: %v", m.Name, err)
 		}
 	} else if _, err := io.Copy(f, data); err != nil {
-		f.Close()
+		_ = f.Close()
 		x.warnf("member %s: write: %v", m.Name, err)
 		return
 	}
@@ -321,7 +324,7 @@ func (x *extractor) extractSymlink(m *member.Member, dest string) {
 	if !ok {
 		return
 	}
-	os.Remove(dest)
+	_ = os.Remove(dest) // a failure here surfaces at the symlink call
 	if err := os.Symlink(target, dest); err != nil {
 		x.warnf("member %s: symlink: %v", m.Name, err)
 	}
@@ -340,7 +343,7 @@ func (x *extractor) extractHardLink(m *member.Member, dest string) {
 	if !ok {
 		return
 	}
-	os.Remove(dest)
+	_ = os.Remove(dest) // a failure here surfaces at the link call
 	if err := os.Link(target, dest); err != nil {
 		x.warnf("member %s: hard link: %v", m.Name, err)
 	}
@@ -468,9 +471,13 @@ func (x *extractor) finishDirs() {
 	// Deepest first so restrictive modes cannot block children writes.
 	for i := len(x.dirFix) - 1; i >= 0; i-- {
 		d := x.dirFix[i]
-		os.Chmod(d.path, d.mode.Perm())
+		if err := os.Chmod(d.path, d.mode.Perm()); err != nil {
+			x.warnf("member %s: chmod: %v", d.path, err)
+		}
 		if !x.o.Touch && !d.mtime.IsZero() {
-			os.Chtimes(d.path, d.mtime, d.mtime)
+			if err := os.Chtimes(d.path, d.mtime, d.mtime); err != nil {
+				x.warnf("member %s: chtimes: %v", d.path, err)
+			}
 		}
 	}
 }

@@ -186,11 +186,12 @@ func permString(mode uint32) string {
 	perm := [9]rune{}
 	for i := 0; i < 9; i++ {
 		if mode&(1<<uint(8-i)) != 0 {
-			if i%3 == 0 {
+			switch i % 3 {
+			case 0:
 				perm[i] = 'r'
-			} else if i%3 == 1 {
+			case 1:
 				perm[i] = 'w'
-			} else {
+			default:
 				perm[i] = 'x'
 			}
 		} else {

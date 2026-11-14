@@ -188,7 +188,7 @@ func Xtar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
-		defer a.Close()
+		defer func() { _ = a.Close() }()
 		if err := a.SetEncoding(encoding); err != nil {
 			return e.fatal("%v", err)
 		}
@@ -222,7 +222,7 @@ func Xtar(name string, argv []string) int {
 		if err != nil {
 			return e.fatal("%v", err)
 		}
-		defer a.Close()
+		defer func() { _ = a.Close() }()
 		if err := a.SetEncoding(encoding); err != nil {
 			return e.fatal("%v", err)
 		}
@@ -254,7 +254,7 @@ func Xtar(name string, argv []string) int {
 			if err := eng.Test(a, os.Stdout, verbosity > 0); err != nil {
 				e.warnf("%s: %v", p, err)
 			}
-			a.Close()
+			_ = a.Close()
 		}
 	}
 

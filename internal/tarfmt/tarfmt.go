@@ -493,7 +493,7 @@ func (t *Reader) skipInline(name string, size int64) error {
 func (t *Reader) discardPad(size int64) {
 	pad := int64(padUp(int(size), blockSize)) - size
 	if pad > 0 {
-		io.CopyN(io.Discard, t.br, pad)
+		_, _ = io.CopyN(io.Discard, t.br, pad)
 		t.pos += pad
 	}
 }
@@ -861,6 +861,12 @@ func (ew *errWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// write is Write for callers that track errors through ew.err (its
+// return value carries nothing new).
+func (ew *errWriter) write(p []byte) {
+	_, _ = ew.Write(p)
+}
+
 // fail records err (first one wins), the Read-side fail pattern.
 func (ew *errWriter) fail(err error) error {
 	if ew.err == nil {
@@ -914,7 +920,7 @@ func (t *Writer) WriteMember(m *member.Member) error {
 		return t.ew.err
 	}
 	if err := writeMember(&t.ew, t.format, m); err != nil {
-		t.ew.fail(err) // sticky, like an io error
+		_ = t.ew.fail(err) // sticky, like an io error
 		return err
 	}
 	return t.ew.err
@@ -928,9 +934,9 @@ func (t *Writer) Close() error {
 	if t.ew.err != nil {
 		return t.ew.err
 	}
-	t.ew.Write(make([]byte, 2*blockSize))
+	t.ew.write(make([]byte, 2*blockSize))
 	if extra := t.ew.n % (20 * blockSize); extra != 0 {
-		t.ew.Write(make([]byte, 20*blockSize-extra))
+		t.ew.write(make([]byte, 20*blockSize-extra))
 	}
 	return t.ew.err
 }
@@ -1096,7 +1102,7 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 		}); err != nil {
 			return err
 		}
-		w.Write(recs.Bytes())
+		w.write(recs.Bytes())
 		padToBlock(w, recs.Len())
 	}
 
@@ -1159,7 +1165,7 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 		return w.err
 	}
 	if m.Kind == member.Regular && len(m.Data) > 0 {
-		w.Write(m.Data)
+		w.write(m.Data)
 		padToBlock(w, len(m.Data))
 	}
 	return w.err
@@ -1196,7 +1202,9 @@ func writeSparseOldgnu(w *errWriter, m *member.Member) error {
 		if n > 21 {
 			n = 21
 		}
-		writeSparseExtHeader(w, rest[i:i+n], len(rest)-i > 21)
+		if err := writeSparseExtHeader(w, rest[i:i+n], len(rest)-i > 21); err != nil {
+			return err
+		}
 	}
 	writeSparseExtents(w, m)
 	return w.err
@@ -1206,16 +1214,21 @@ func writeSparseOldgnu(w *errWriter, m *member.Member) error {
 // extent slots from byte 0, isextended at 504.  GNU tar writes no
 // checksum for these blocks — the slots run straight through the
 // checksum's usual bytes — and its reader verifies none.
-func writeSparseExtHeader(w *errWriter, spans []member.SparseSpan, more bool) {
+func writeSparseExtHeader(w *errWriter, spans []member.SparseSpan, more bool) error {
 	var blk [blockSize]byte
 	for i, sp := range spans {
-		putNum(blk[24*i:24*i+12], sp.Off, false)
-		putNum(blk[24*i+12:24*i+24], sp.Len, false)
+		if err := putNum(blk[24*i:24*i+12], sp.Off, false); err != nil {
+			return err
+		}
+		if err := putNum(blk[24*i+12:24*i+24], sp.Len, false); err != nil {
+			return err
+		}
 	}
 	if more {
 		blk[504] = '1'
 	}
-	w.Write(blk[:])
+	w.write(blk[:])
+	return nil
 }
 
 // writeSparseExtents writes the member's extent bytes, each padded to
@@ -1227,7 +1240,7 @@ func writeSparseExtents(w *errWriter, m *member.Member) {
 		if sp.Len == 0 {
 			continue
 		}
-		w.Write(m.Data[pos : pos+int(sp.Len)])
+		w.write(m.Data[pos : pos+int(sp.Len)])
 		padToBlock(w, int(sp.Len))
 		pos += int(sp.Len)
 	}
@@ -1266,22 +1279,6 @@ func gnuSparseDummyName(name string) string {
 		return "GNUSparseFile.0/" + name
 	}
 	return name[:i+1] + "GNUSparseFile.0/" + name[i+1:]
-}
-
-// finishChecksum fills a header block's checksum field: the byte sum
-// with the field as eight spaces, six octal digits, NUL, space.
-func finishChecksum(blk []byte) {
-	var sum int64
-	for i, b := range blk {
-		if i >= 148 && i < 156 {
-			sum += ' '
-		} else {
-			sum += int64(b)
-		}
-	}
-	copy(blk[148:156], fmt.Sprintf("%06o", sum))
-	blk[154] = 0
-	blk[155] = ' '
 }
 
 func writeHeader(w *errWriter, format string, s hdrSpec) error {
@@ -1361,7 +1358,7 @@ func writeHeader(w *errWriter, format string, s hdrSpec) error {
 	blk[154] = 0
 	blk[155] = ' '
 
-	w.Write(blk[:])
+	w.write(blk[:])
 	return w.err
 }
 
@@ -1464,7 +1461,7 @@ func padUp(n, bs int) int {
 
 func padToBlock(w *errWriter, n int) {
 	if r := n % blockSize; r != 0 {
-		w.Write(make([]byte, blockSize-r))
+		w.write(make([]byte, blockSize-r))
 	}
 }
 

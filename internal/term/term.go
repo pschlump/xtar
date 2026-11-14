@@ -37,7 +37,7 @@ func NoEcho() (restore func()) {
 		return func() {}
 	}
 	return func() {
-		syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
-			ioctlWriteTermios, uintptr(unsafe.Pointer(&old)), 0, 0, 0)
+		_, _, _ = syscall.Syscall6(syscall.SYS_IOCTL, uintptr(fd),
+			ioctlWriteTermios, uintptr(unsafe.Pointer(&old)), 0, 0, 0) // best-effort restore
 	}
 }

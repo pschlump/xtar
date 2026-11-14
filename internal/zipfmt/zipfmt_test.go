@@ -47,8 +47,8 @@ func TestStdlibReadsOurZip(t *testing.T) {
 		seen[f.Name]++
 		switch f.Name {
 		case "d/a.txt":
-			if f.FileHeader.Method != zip.Deflate {
-				t.Fatalf("a.txt method %d, want deflate", f.FileHeader.Method)
+			if f.Method != zip.Deflate {
+				t.Fatalf("a.txt method %d, want deflate", f.Method)
 			}
 			rc, err := f.Open()
 			if err != nil {

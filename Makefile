@@ -13,6 +13,12 @@ links: build
 test:
 	$(GO) test ./... -count=1
 
+race:
+	$(GO) test -race -count=1 ./...
+
+lint:
+	golangci-lint run ./...
+
 vet:
 	$(GO) vet ./...
 
@@ -25,4 +31,4 @@ fmt:
 clean:
 	rm -rf bin cover.out
 
-.PHONY: all build links test vet cover fmt clean
+.PHONY: all build links test race lint vet cover fmt clean

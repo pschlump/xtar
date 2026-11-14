@@ -56,32 +56,32 @@ func Unzip(name string, argv []string) int {
 			continue
 		}
 		o := t.o
-		switch {
-		case o.short == 'p':
+		switch o.short {
+		case 'p':
 			print = true
-		case o.short == 'l':
+		case 'l':
 			list = true
-		case o.short == 'v':
+		case 'v':
 			verbose = true
-		case o.short == 't':
+		case 't':
 			test = true
-		case o.short == 'd':
+		case 'd':
 			dest = t.value
-		case o.short == 'x':
+		case 'x':
 			excludes = append(excludes, t.value)
-		case o.short == 'o':
+		case 'o':
 			overwrite = true
-		case o.short == 'n':
+		case 'n':
 			never = true
-		case o.short == 'j':
+		case 'j':
 			junk = true
-		case o.short == 'q':
+		case 'q':
 			quiet = true
-		case o.short == 'P':
+		case 'P':
 			password = t.value
-		case o.short == 'Z':
+		case 'Z':
 			zipinfoMode = true
-		case o.short == 'O':
+		case 'O':
 			encoding = t.value
 		default:
 			// -a/-h: accepted, no effect
@@ -100,7 +100,7 @@ func Unzip(name string, argv []string) int {
 		// unzip asks for the password when the archive needs one and
 		// none was supplied.
 		if pa, err := eng.OpenFile(archive, ""); err == nil {
-			pa.Close()
+			_ = pa.Close()
 		} else if strings.Contains(err.Error(), "password") {
 			password = promptPassword("Enter password: ")
 		}
@@ -109,7 +109,7 @@ func Unzip(name string, argv []string) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	if err := a.SetEncoding(encoding); err != nil {
 		return e.fatal("%v", err)
 	}
@@ -207,14 +207,14 @@ func Zipinfo(name string, argv []string) int {
 			continue
 		}
 		o := t.o
-		switch {
-		case o.short == '1':
+		switch o.short {
+		case '1':
 			namesOnly = true
-		case o.short == 'h':
+		case 'h':
 			header = true
-		case o.short == 'v':
+		case 'v':
 			verbose = true
-		case o.short == 'x':
+		case 'x':
 			excludes = append(excludes, t.value)
 		default:
 			// -m/-s/-t/-M/-l/-z: listing shapes not distinguished here
@@ -227,7 +227,7 @@ func Zipinfo(name string, argv []string) int {
 	if err != nil {
 		return e.fatal("%v", err)
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
@@ -279,6 +279,6 @@ func isTerminal() bool {
 	if err != nil {
 		return false
 	}
-	f.Close()
+	_ = f.Close()
 	return true
 }

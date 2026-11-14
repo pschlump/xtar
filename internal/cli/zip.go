@@ -268,7 +268,7 @@ func verifyZip(path, password string) error {
 	if err != nil {
 		return err
 	}
-	defer a.Close()
+	defer func() { _ = a.Close() }()
 	for i := range a.Members {
 		m := &a.Members[i]
 		if m.Raw == nil || m.Kind == member.Directory {

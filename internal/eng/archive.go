@@ -265,7 +265,7 @@ func OpenFile(path, password string) (*Archive, error) {
 	}
 	a, err := OpenStream(f, path, password)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if fi, err := f.Stat(); err == nil {
@@ -274,7 +274,7 @@ func OpenFile(path, password string) (*Archive, error) {
 	if a.src != nil {
 		a.src.closer = f // Close releases the codec chain and the file
 	} else {
-		f.Close()
+		_ = f.Close()
 	}
 	return a, nil
 }
@@ -303,7 +303,7 @@ func OpenStream(r io.Reader, name, password string) (*Archive, error) {
 	a := &Archive{Password: password, Path: name, Layers: codecs}
 	switch res.Kind {
 	case sniff.Unsupported:
-		rc.Close()
+		_ = rc.Close()
 		return nil, UnsupportedError(res.Format)
 	case sniff.Container:
 		switch res.Format {
@@ -320,7 +320,7 @@ func OpenStream(r io.Reader, name, password string) (*Archive, error) {
 		}
 		// zip: the central directory is at the end — read it whole.
 		body, err := io.ReadAll(rc)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -331,14 +331,14 @@ func OpenStream(r io.Reader, name, password string) (*Archive, error) {
 		return a, nil
 	case sniff.Compression:
 		// layer.Open never returns Compression; unreachable.
-		rc.Close()
+		_ = rc.Close()
 		return nil, fmt.Errorf("internal: peel returned a compression layer")
 	}
 	// Unknown content: a bare compressed stream is one member named
 	// after the file; anything else is not an archive we know.
 	if len(codecs) > 0 {
 		body, err := io.ReadAll(rc)
-		rc.Close()
+		_ = rc.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +359,7 @@ func OpenStream(r io.Reader, name, password string) (*Archive, error) {
 		}}
 		return a, nil
 	}
-	rc.Close()
+	_ = rc.Close()
 	return nil, ErrNotArchive
 }
 

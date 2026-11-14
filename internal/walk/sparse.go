@@ -32,7 +32,7 @@ func readSparse(path string, size int64) (data []byte, spans []member.SparseSpan
 	if err != nil {
 		return nil, nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	extents := seekExtents(f, size)
 	if extents == nil {

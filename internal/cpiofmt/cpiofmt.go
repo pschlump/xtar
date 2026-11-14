@@ -243,7 +243,7 @@ func (c *Reader) readName(namesize int64, at int64) (string, error) {
 // discard skips n bytes (padding); running out is not an error, the
 // next header read reports the real state.
 func (c *Reader) discard(n int64) {
-	io.CopyN(io.Discard, c.br, n)
+	_, _ = io.CopyN(io.Discard, c.br, n) // short skips surface at the next header read
 	c.pos += n
 }
 
@@ -494,7 +494,7 @@ func pad4(n int) int { return (4 - n%4) % 4 }
 
 func isHex(s string) bool {
 	for _, c := range s {
-		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') && (c < 'A' || c > 'F') {
 			return false
 		}
 	}

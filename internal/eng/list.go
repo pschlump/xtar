@@ -94,11 +94,11 @@ func listTar(a *Archive, o *ListOpts) {
 			if m.Kind == member.HardLink {
 				link = " link to " + m.LinkName
 			}
-			fmt.Fprintf(o.Out, "%s %s %8d %s %s%s\n",
+			outf(o.Out, "%s %s %8d %s %s%s\n",
 				m.ModeString(), ownerStr(m, o.Numeric), m.DataSize(),
 				m.ModTime.Format("2006-01-02 15:04"), name, link)
 		} else {
-			fmt.Fprintln(o.Out, name)
+			outf(o.Out, "%s\n", name)
 		}
 		return nil
 	})
@@ -113,24 +113,31 @@ func listCpio(a *Archive, o *ListOpts) {
 			return nil
 		}
 		if o.Verbose >= 1 {
-			fmt.Fprintf(o.Out, "%s %6d %s %s\n",
+			outf(o.Out, "%s %6d %s %s\n",
 				m.ModeString(), m.DataSize(), m.ModTime.Format("Jan _2 15:04 2006"), name)
 		} else {
-			fmt.Fprintln(o.Out, name)
+			outf(o.Out, "%s\n", name)
 		}
 		return nil
 	})
 	flushNotes(a, o.Warn, n0)
 }
 
+// outf writes one listing line.  A failing output writer (a closed
+// stdout mid-listing) leaves nothing useful to do, so the error is
+// dropped — the native tools' listings behave the same way.
+func outf(w io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(w, format, args...)
+}
+
 func listUnzip(a *Archive, o *ListOpts) {
-	fmt.Fprintf(o.Out, "Archive:  %s\n", displayName(a))
+	outf(o.Out, "Archive:  %s\n", displayName(a))
 	if o.Verbose >= 2 {
-		fmt.Fprintf(o.Out, "  Length Method    Size Cmpr    Date    Time       CRC-32   Name\n")
-		fmt.Fprintf(o.Out, "--------  ------ ------- ---- ---------- ----- ------------  ----\n")
+		outf(o.Out, "  Length Method    Size Cmpr    Date    Time       CRC-32   Name\n")
+		outf(o.Out, "--------  ------ ------- ---- ---------- ----- ------------  ----\n")
 	} else {
-		fmt.Fprintf(o.Out, "  Length      Date    Time    Name\n")
-		fmt.Fprintf(o.Out, "---------  ---------- -----   ----\n")
+		outf(o.Out, "  Length      Date    Time    Name\n")
+		outf(o.Out, "---------  ---------- -----   ----\n")
 	}
 	var total, nfiles, ndirs int
 	_ = a.Each(func(m *member.Member, _ io.Reader) error {
@@ -147,20 +154,20 @@ func listUnzip(a *Archive, o *ListOpts) {
 		}
 		total += int(m.DataSize())
 		if o.Verbose >= 2 {
-			fmt.Fprintf(o.Out, "%8d %-8s %7d %3s%% %s %08x %s\n",
+			outf(o.Out, "%8d %-8s %7d %3s%% %s %08x %s\n",
 				m.DataSize(), zipMethodStr(m), zipCompSize(m), "-", m.ModTime.Format("2006-01-02 15:04"), zipCRC(m), name)
 		} else {
-			fmt.Fprintf(o.Out, "%9d  %s   %s\n", m.DataSize(), m.ModTime.Format("2006-01-02 15:04"), name)
+			outf(o.Out, "%9d  %s   %s\n", m.DataSize(), m.ModTime.Format("2006-01-02 15:04"), name)
 		}
 		return nil
 	})
-	fmt.Fprintf(o.Out, "---------                     -------\n")
-	fmt.Fprintf(o.Out, "%9d                     %d file%s, %d director%s\n",
+	outf(o.Out, "---------                     -------\n")
+	outf(o.Out, "%9d                     %d file%s, %d director%s\n",
 		total, nfiles, plural(nfiles), ndirs, pluralY(ndirs))
 }
 
 func listZipinfo(a *Archive, o *ListOpts) {
-	fmt.Fprintf(o.Out, "Archive:  %s\n", displayName(a))
+	outf(o.Out, "Archive:  %s\n", displayName(a))
 	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
@@ -169,7 +176,7 @@ func listZipinfo(a *Archive, o *ListOpts) {
 		if m.Kind == member.Directory {
 			name += "/"
 		}
-		fmt.Fprintf(o.Out, "%s  %s unx %8d %s %s\n",
+		outf(o.Out, "%s  %s unx %8d %s %s\n",
 			m.ModeString(), "1.0", m.DataSize(),
 			m.ModTime.Format("20060102.150405"), name)
 		return nil
@@ -177,12 +184,12 @@ func listZipinfo(a *Archive, o *ListOpts) {
 }
 
 func list7z(a *Archive, o *ListOpts) {
-	fmt.Fprintf(o.Out, "\nListing archive: %s\n\n", displayName(a))
-	fmt.Fprintf(o.Out, "--\nPath = %s\n", displayName(a))
-	fmt.Fprintf(o.Out, "Type = %s\n", a.Format)
-	fmt.Fprintf(o.Out, "Method = %s%s\n", strings.Join(a.Layers, ", "), containerMethod(a))
-	fmt.Fprintf(o.Out, "\n   Date      Time    Attr         Size   Compressed  Name\n")
-	fmt.Fprintf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
+	outf(o.Out, "\nListing archive: %s\n\n", displayName(a))
+	outf(o.Out, "--\nPath = %s\n", displayName(a))
+	outf(o.Out, "Type = %s\n", a.Format)
+	outf(o.Out, "Method = %s%s\n", strings.Join(a.Layers, ", "), containerMethod(a))
+	outf(o.Out, "\n   Date      Time    Attr         Size   Compressed  Name\n")
+	outf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
 	_ = a.Each(func(m *member.Member, _ io.Reader) error {
 		name, ok := selected(o, m.Name)
 		if !ok {
@@ -195,11 +202,11 @@ func list7z(a *Archive, o *ListOpts) {
 		case member.SymLink:
 			attr = "....LA"
 		}
-		fmt.Fprintf(o.Out, "%s %s %12d %12s  %s\n",
+		outf(o.Out, "%s %s %12d %12s  %s\n",
 			m.ModTime.Format("2006-01-02 15:04:05"), attr, m.DataSize(), "-", name)
 		return nil
 	})
-	fmt.Fprintf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
+	outf(o.Out, "------------------- ----- ------------ ------------  ------------------------\n")
 }
 
 func displayName(a *Archive) string {
@@ -270,7 +277,7 @@ func Test(a *Archive, out io.Writer, verbose bool) error {
 	bad := 0
 	if a.Format == "zip" {
 		if verbose {
-			fmt.Fprintf(out, "Archive:  %s\n", displayName(a))
+			outf(out, "Archive:  %s\n", displayName(a))
 		}
 		for i := range a.Members {
 			m := &a.Members[i]
@@ -280,13 +287,13 @@ func Test(a *Archive, out io.Writer, verbose bool) error {
 			}
 			if m.Raw != nil && m.Raw.CRC != zipCRC32(m.Data) {
 				bad++
-				fmt.Fprintf(out, "    testing: %-42s bad CRC %08x (want %08x)\n", name, zipCRC32(m.Data), m.Raw.CRC)
+				outf(out, "    testing: %-42s bad CRC %08x (want %08x)\n", name, zipCRC32(m.Data), m.Raw.CRC)
 			} else if verbose {
-				fmt.Fprintf(out, "    testing: %-42s OK\n", name)
+				outf(out, "    testing: %-42s OK\n", name)
 			}
 		}
 		if verbose {
-			fmt.Fprintf(out, "No errors detected in %s\n", displayName(a))
+			outf(out, "No errors detected in %s\n", displayName(a))
 		}
 		if bad > 0 {
 			return fmt.Errorf("%d member(s) failed the CRC check", bad)
@@ -294,7 +301,7 @@ func Test(a *Archive, out io.Writer, verbose bool) error {
 		return nil
 	}
 	if verbose {
-		fmt.Fprintf(out, "%s: structure and checksums verified (container %s)\n", displayName(a), a.Format)
+		outf(out, "%s: structure and checksums verified (container %s)\n", displayName(a), a.Format)
 	}
 	return nil
 }
@@ -313,19 +320,19 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 			name += "/"
 		}
 		if err != nil {
-			fmt.Fprintf(out, "%s: does not exist\n", name)
+			outf(out, "%s: does not exist\n", name)
 			diffs++
 			return nil
 		}
 		switch m.Kind {
 		case member.Regular:
 			if !fi.Mode().IsRegular() {
-				fmt.Fprintf(out, "%s: type differs\n", name)
+				outf(out, "%s: type differs\n", name)
 				diffs++
 				return nil
 			}
 			if fi.Size() != m.DataSize() {
-				fmt.Fprintf(out, "%s: size differs\n", name)
+				outf(out, "%s: size differs\n", name)
 				diffs++
 				return nil
 			}
@@ -336,13 +343,13 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 				same = sameContent(fsPath, data)
 			}
 			if !same {
-				fmt.Fprintf(out, "%s: contents differ\n", name)
+				outf(out, "%s: contents differ\n", name)
 				diffs++
 			}
 		case member.SymLink:
 			target, _ := os.Readlink(fsPath)
 			if target != m.LinkName {
-				fmt.Fprintf(out, "%s: link target differs\n", name)
+				outf(out, "%s: link target differs\n", name)
 				diffs++
 			}
 		case member.HardLink:
@@ -350,12 +357,12 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 			// link target (a copy breaks the link).
 			tfi, terr := os.Lstat(filepath.Join(dir, filepath.FromSlash(m.LinkName)))
 			if terr != nil || !os.SameFile(fi, tfi) {
-				fmt.Fprintf(out, "%s: not linked to %s\n", name, m.LinkName)
+				outf(out, "%s: not linked to %s\n", name, m.LinkName)
 				diffs++
 			}
 		}
 		if !fi.ModTime().Truncate(1e9).Equal(m.ModTime.Truncate(1e9)) && fi.ModTime().Unix() != m.ModTime.Unix() {
-			fmt.Fprintf(out, "%s: mod time differs\n", name)
+			outf(out, "%s: mod time differs\n", name)
 			diffs++
 		}
 		return nil
@@ -372,7 +379,7 @@ func sameContent(fsPath string, data io.Reader) bool {
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var ab, bb [64 * 1024]byte
 	for {
 		an, aerr := io.ReadFull(data, ab[:])
@@ -411,7 +418,7 @@ func sameSparseContent(fsPath string, data io.Reader, spans []member.SparseSpan)
 	if err != nil {
 		return false
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	var fb, db [32 * 1024]byte
 	for _, sp := range spans {
 		for left := sp.Len; left > 0; {

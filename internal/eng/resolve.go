@@ -61,11 +61,11 @@ func ResolveByName(name, defaultContainer string) (Resolved, error) {
 			r.Codec, base = "gzip", trim(base, 2)
 			continue
 		case sfx(base, ".tar"):
-			r.Container, base = "tar", trim(base, 4)
+			r.Container = "tar"
 		case sfx(base, ".cpio"):
-			r.Container, base = "cpio", trim(base, 5)
+			r.Container = "cpio"
 		case sfx(base, ".zip"), sfx(base, ".jar"), sfx(base, ".war"), sfx(base, ".whl"):
-			r.Container, base = "zip", trim(base, 4)
+			r.Container = "zip"
 		case sfx(base, ".7z"):
 			return r, UnsupportedError("7z")
 		}
