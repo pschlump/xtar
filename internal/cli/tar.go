@@ -78,6 +78,7 @@ var tarSpecs = []opt{
 	{long: "numeric-owner"},
 	{long: "no-recursion"},
 	{long: "recursion"},
+	{long: "sparse", short: 'S'},
 	{long: "one-file-system", short: 'l'},
 	{long: "dereference", short: 'h'},
 	{long: "transform", arg: true},
@@ -109,7 +110,7 @@ func Tar(name string, argv []string) int {
 	var verbosity, strip int
 	var nullSep, toStdout, keepPerms, touch, noSameOwner bool
 	var interactive, verify, totals, numericOwner bool
-	var noRecursion, oneFS, follow bool
+	var noRecursion, oneFS, follow, sparse bool
 	var ownerSpec, groupSpec string
 	overwrite := eng.OvAlways
 	chdir := "" // running -C prefix for operands
@@ -225,6 +226,8 @@ func Tar(name string, argv []string) int {
 			noRecursion = true
 		case o.long == "recursion":
 			noRecursion = false
+		case o.short == 'S':
+			sparse = true
 		case o.short == 'l':
 			oneFS = true
 		case o.short == 'h':
@@ -282,6 +285,7 @@ func Tar(name string, argv []string) int {
 		Names:        patternSrc,
 		NamePolicy:   walk.TarNames, // GNU tar keeps ./f.txt, stores the . root
 		NoRecursion:  noRecursion,
+		Sparse:       sparse, // -S: store holes as extents
 		Recurse:      !noRecursion,
 		OneFS:        oneFS,
 		Follow:       follow,

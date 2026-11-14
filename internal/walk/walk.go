@@ -66,6 +66,7 @@ type Opts struct {
 	Symlinks    bool // store symlinks as symlink members (tar/cpio default; zip needs -y)
 	Junk        bool // -j: store base names only
 	NoDirs      bool // -D: do not store directory entries at all
+	Sparse      bool // -S: store holes as sparse extents instead of zeros
 
 	Exclude []*pat.Pattern
 	Include []*pat.Pattern
@@ -303,13 +304,22 @@ func (g *gatherer) addEntry(name, fsPath string, fi os.FileInfo) {
 		}
 		m.Kind = member.Regular
 		m.Mode = member.FromFileMode(fi.Mode())
-		data, err := os.ReadFile(fsPath)
+		var data []byte
+		var err error
+		if g.o.Sparse {
+			data, m.Sparse, err = readSparse(fsPath, fi.Size())
+		} else {
+			data, err = os.ReadFile(fsPath)
+		}
 		if err != nil {
 			g.warnf("%s: cannot read: %v", fsPath, err)
 			return
 		}
 		m.Data = data
-		m.Size = int64(len(data))
+		m.Size = fi.Size()
+		if m.Sparse == nil {
+			m.Size = int64(len(data))
+		}
 	default:
 		g.warnf("%s: unsupported file type %v, skipping", fsPath, fi.Mode().Type())
 		return

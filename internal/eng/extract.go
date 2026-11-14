@@ -275,7 +275,28 @@ func (x *extractor) extractFile(m *member.Member, dest string, data io.Reader) {
 		x.warnf("member %s: create: %v", m.Name, err)
 		return
 	}
-	if _, err := io.Copy(f, data); err != nil {
+	if m.Sparse != nil {
+		// Write each extent at its offset; the gaps are the holes.
+		// The final truncate sizes the file, covering a trailing hole.
+		for _, sp := range m.Sparse {
+			if sp.Len == 0 {
+				continue
+			}
+			if _, err := f.Seek(sp.Off, io.SeekStart); err != nil {
+				f.Close()
+				x.warnf("member %s: seek: %v", m.Name, err)
+				return
+			}
+			if _, err := io.CopyN(f, data, sp.Len); err != nil {
+				f.Close()
+				x.warnf("member %s: write: %v", m.Name, err)
+				return
+			}
+		}
+		if err := f.Truncate(m.Size); err != nil {
+			x.warnf("member %s: truncate: %v", m.Name, err)
+		}
+	} else if _, err := io.Copy(f, data); err != nil {
 		f.Close()
 		x.warnf("member %s: write: %v", m.Name, err)
 		return

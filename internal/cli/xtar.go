@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/eng"
 	"github.com/pschlump/xtar/internal/walk"
 )
@@ -122,7 +123,9 @@ func Xtar(name string, argv []string) int {
 		}
 	}
 	if encoding != "" {
-		return e.fatal("--encoding is not supported yet (it arrives with zip support, roadmap M3)")
+		if _, err := charset.ByName(encoding); err != nil {
+			return e.fatal("%v", err)
+		}
 	}
 	if len(operands) == 0 {
 		return e.fatal("no archive given")
@@ -186,6 +189,9 @@ func Xtar(name string, argv []string) int {
 			return e.fatal("%v", err)
 		}
 		defer a.Close()
+		if err := a.SetEncoding(encoding); err != nil {
+			return e.fatal("%v", err)
+		}
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}
@@ -217,6 +223,9 @@ func Xtar(name string, argv []string) int {
 			return e.fatal("%v", err)
 		}
 		defer a.Close()
+		if err := a.SetEncoding(encoding); err != nil {
+			return e.fatal("%v", err)
+		}
 		for _, n := range a.Notes {
 			e.warnf("%s", n)
 		}

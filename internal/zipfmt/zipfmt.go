@@ -21,6 +21,7 @@ import (
 	"github.com/pschlump/pluto/bzip2"
 	"github.com/pschlump/pluto/crc"
 	"github.com/pschlump/pluto/deflate"
+	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/member"
 )
 
@@ -37,6 +38,16 @@ const (
 	flagDataDesc  uint16 = 1 << 3
 	flagEFS       uint16 = 1 << 11
 )
+
+// decodeCP437 decodes legacy zip names (the spec fixes code page 437
+// for entries without the UTF-8 flag).
+var decodeCP437 = func() func([]byte) string {
+	d, err := charset.ByName("cp437")
+	if err != nil {
+		panic(err)
+	}
+	return d
+}()
 
 // verMadeUNIX is the "made by" version for entries we write (UNIX,
 // spec 2.0).
@@ -255,7 +266,7 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 	if e.flags&flagEFS != 0 {
 		e.name = string(e.rawName)
 	} else {
-		e.name = cp437(e.rawName)
+		e.name = decodeCP437(e.rawName)
 	}
 
 	lh := int64(e.offset) + shift
@@ -276,6 +287,7 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 		Method:  e.method,
 	}
 	m.Raw = &member.ZipRaw{
+		RawName:      append([]byte(nil), e.rawName...), // for --encoding re-reads
 		Method:       e.method,
 		Flags:        e.flags &^ flagDataDesc, // rebuilt headers carry real sizes
 		ModTime:      e.modTime,

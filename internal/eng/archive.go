@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
 	"github.com/pschlump/xtar/internal/member"
@@ -53,6 +54,53 @@ type Archive struct {
 	// src is non-nil while members stream through Each (data is not
 	// buffered); Close releases it.
 	src *streamState
+
+	// dec, set by SetEncoding, reinterprets member names stored
+	// without a declared character set.
+	dec charset.Decoder
+}
+
+// SetEncoding reinterprets member names as enc ("cp437",
+// "iso-8859-1", "mac-roman", "utf-8") — the zips old Windows and
+// classic-Mac tools wrote, and tar/cpio names that carry no charset
+// of their own.  Names already declared UTF-8 (a zip's EFS bit, pax
+// records) are left alone.  It applies to the members already loaded
+// and to the ones Each walks later.
+func (a *Archive) SetEncoding(enc string) error {
+	if enc == "" {
+		return nil
+	}
+	dec, err := charset.ByName(enc)
+	if err != nil {
+		return err
+	}
+	a.dec = dec
+	for i := range a.Members {
+		a.recode(&a.Members[i])
+	}
+	return nil
+}
+
+// recode rewrites one member's name (and link target) through the
+// archive's encoding, from the stored bytes where the container kept
+// them.
+func (a *Archive) recode(m *member.Member) {
+	if a.dec == nil {
+		return
+	}
+	if m.Raw != nil {
+		if m.Raw.Flags&0x800 != 0 {
+			return // the EFS bit declares UTF-8
+		}
+		if m.Raw.RawName != nil {
+			m.Name = a.dec(m.Raw.RawName)
+		}
+	} else {
+		m.Name = a.dec([]byte(m.Name))
+	}
+	if m.LinkName != "" {
+		m.LinkName = a.dec([]byte(m.LinkName))
+	}
 }
 
 // streamState is the streaming read side of an Archive: the codec
@@ -164,6 +212,7 @@ func (a *Archive) Each(visit func(m *member.Member, data io.Reader) error) error
 			if err != nil {
 				return err
 			}
+			a.recode(m)                       // --encoding applies as members walk by
 			a.Members = append(a.Members, *m) // the metadata trail; data streams
 			var data io.Reader = emptyReader{}
 			switch {

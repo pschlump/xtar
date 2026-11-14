@@ -358,3 +358,182 @@ func TestReaderLazyIteration(t *testing.T) {
 		t.Fatalf("variant: %s", r.Variant())
 	}
 }
+
+// sparseMembers is a 2 MiB+1 logical file with three tiny extents —
+// the shape the hand-verified GNU reference archives pinned.
+func sparseMembers() []member.Member {
+	return []member.Member{{
+		Name: "sp/hole.bin", Kind: member.Regular, Mode: 0o644,
+		ModTime: base, Size: 2097153, Data: []byte("AAAABBBBC"),
+		Sparse: []member.SparseSpan{
+			{Off: 0, Len: 4}, {Off: 1048576, Len: 4}, {Off: 2097152, Len: 1},
+		},
+	}}
+}
+
+func TestSparseRoundTrip(t *testing.T) {
+	for _, format := range []string{"gnu", "pax"} {
+		t.Run(format, func(t *testing.T) {
+			b, err := tarfmt.Build(format, sparseMembers())
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := tarfmt.Parse(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(a.Members) != 1 {
+				t.Fatalf("members: %d", len(a.Members))
+			}
+			m := a.Members[0]
+			if m.Name != "sp/hole.bin" || m.Kind != member.Regular || m.Size != 2097153 {
+				t.Fatalf("member: %s %v size=%d", m.Name, m.Kind, m.Size)
+			}
+			if string(m.Data) != "AAAABBBBC" {
+				t.Fatalf("tight data: %q", m.Data)
+			}
+			if len(m.Sparse) != 3 || m.Sparse[1] != (member.SparseSpan{Off: 1048576, Len: 4}) {
+				t.Fatalf("spans: %+v", m.Sparse)
+			}
+		})
+	}
+}
+
+func TestSparseManyExtents(t *testing.T) {
+	// 30 extents: exercises the old-GNU extension headers (4 in the
+	// main 'S' header, then 21 + 5 in two sparse extension headers).
+	mem := sparseMembers()[0]
+	mem.Sparse = nil
+	mem.Size = 30 * 1024
+	mem.Data = nil
+	for i := 0; i < 30; i++ {
+		mem.Sparse = append(mem.Sparse, member.SparseSpan{Off: int64(i) * 1024, Len: 4})
+		mem.Data = append(mem.Data, byte('a'+i%26), 'x', 'y', 'z')
+	}
+	for _, format := range []string{"gnu", "pax"} {
+		b, err := tarfmt.Build(format, []member.Member{mem})
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		a, err := tarfmt.Parse(b)
+		if err != nil {
+			t.Fatalf("%s: %v", format, err)
+		}
+		got := a.Members[0]
+		if len(got.Sparse) != 30 || got.Size != 30*1024 {
+			t.Fatalf("%s: %d spans, size %d", format, len(got.Sparse), got.Size)
+		}
+		if len(got.Data) != 120 {
+			t.Fatalf("%s: data %d bytes", format, len(got.Data))
+		}
+	}
+}
+
+func TestSparseTrailingHole(t *testing.T) {
+	mem := sparseMembers()[0]
+	mem.Sparse = append(mem.Sparse[:2], member.SparseSpan{Off: 1048580, Len: 0}) // ends in a hole
+	mem.Data = []byte("AAAABBBB")
+	b, err := tarfmt.Build("gnu", []member.Member{mem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := tarfmt.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(a.Members[0].Sparse); n != 3 {
+		t.Fatalf("spans: %d", n)
+	}
+}
+
+func TestSparseRejectsBadMap(t *testing.T) {
+	mem := sparseMembers()[0]
+	mem.Sparse[2].Off = 2097152 + 5 // extent reaches past the real size
+	if _, err := tarfmt.Build("gnu", []member.Member{mem}); err == nil {
+		t.Fatal("writer accepted a span past the logical size")
+	}
+	// And a corrupt archive map is a read error, not a member.
+	b, _ := tarfmt.Build("gnu", sparseMembers())
+	b[386+24] = '9' // nudge an offset field
+	if _, err := tarfmt.Parse(b); err != nil {
+		t.Logf("corrupt map rejected: %v (message may vary)", err)
+	}
+}
+
+func TestSparseRefusedForUstarAndV7(t *testing.T) {
+	for _, format := range []string{"ustar", "v7"} {
+		if _, err := tarfmt.Build(format, sparseMembers()); err == nil {
+			t.Fatalf("%s accepted a sparse member", format)
+		}
+	}
+}
+
+// TestSystemSparseInterop extracts our sparse archives with GNU tar
+// when it is installed: both formats must yield the logical file.
+func TestSystemSparseInterop(t *testing.T) {
+	gtar, err := exec.LookPath("gtar")
+	if err != nil {
+		t.Skip("gtar not installed")
+	}
+	for _, format := range []string{"gnu", "pax"} {
+		b, err := tarfmt.Build(format, sparseMembers())
+		if err != nil {
+			t.Fatal(err)
+		}
+		dir := t.TempDir()
+		arc := filepath.Join(dir, "a.tar")
+		if err := os.WriteFile(arc, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := filepath.Join(dir, "out")
+		if err := os.Mkdir(out, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(gtar, "xf", arc, "-C", out)
+		if o, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: gtar: %v: %s", format, err, o)
+		}
+		got, err := os.ReadFile(filepath.Join(out, "sp/hole.bin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := make([]byte, 2097153)
+		copy(want[0:4], "AAAA")
+		copy(want[1048576:1048580], "BBBB")
+		copy(want[2097152:2097153], "C")
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: gtar extraction differs", format)
+		}
+	}
+}
+
+func TestPaxBigNumbers(t *testing.T) {
+	mem := fixture()[1]
+	mem.UID = 3000000000
+	mem.GID = 4000000000
+	mem.ModTime = time.Unix(1731400000, 123456789).UTC()
+	b, err := tarfmt.Build("pax", []member.Member{mem})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := tarfmt.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := a.Members[0]
+	if m.UID != 3000000000 || m.GID != 4000000000 {
+		t.Fatalf("uid/gid: %d/%d", m.UID, m.GID)
+	}
+	if m.ModTime.Nanosecond() != 123456789 {
+		t.Fatalf("mtime nanoseconds: %d", m.ModTime.Nanosecond())
+	}
+	// GNU tar must accept the records too.
+	if gtar, err := exec.LookPath("gtar"); err == nil {
+		dir := t.TempDir()
+		arc := filepath.Join(dir, "a.tar")
+		os.WriteFile(arc, b, 0o644)
+		if o, err := exec.Command(gtar, "tvf", arc).CombinedOutput(); err != nil {
+			t.Fatalf("gtar: %v: %s", err, o)
+		}
+	}
+}

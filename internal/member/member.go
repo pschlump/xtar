@@ -91,6 +91,13 @@ type Member struct {
 
 	Data []byte // Regular content, or the symlink target
 
+	// Sparse maps a sparse regular file: Off/Len locate each data
+	// extent in the logical file, Data holds the extents' bytes
+	// concatenated (tight), and Size is the logical size.  Nil for
+	// dense members.  The last extent may be zero-length, marking a
+	// trailing hole (GNU convention).
+	Sparse []SparseSpan
+
 	Comment    string // zip member comment
 	Method     uint16 // zip write preference: 0 store, 8 deflate, 12 bzip2
 	Encrypted  bool   // zip write request (traditional PKWARE)
@@ -104,6 +111,7 @@ type Member struct {
 
 // ZipRaw is the verbatim stored form of one zip entry.
 type ZipRaw struct {
+	RawName      []byte // name bytes as stored (for --encoding re-reads)
 	Method       uint16
 	Flags        uint16
 	ModTime      uint16 // DOS time
@@ -122,10 +130,31 @@ type ZipRaw struct {
 
 func (m *Member) IsDir() bool { return m.Kind == Directory }
 
-// DataSize is the member's content size: the buffered data when the
-// member was loaded whole, otherwise the header's size field (streamed
+// SparseSpan is one data extent of a sparse member: its offset and
+// length in the logical file.  Holes are everything between extents.
+type SparseSpan struct {
+	Off int64
+	Len int64
+}
+
+// StoredSize is the archive-side size of the member's extents: each
+// extent rounded up to a 512-byte block, the way GNU tar stores them.
+func (m *Member) StoredSize() int64 {
+	var n int64
+	for _, s := range m.Sparse {
+		n += (s.Len + 511) / 512 * 512
+	}
+	return n
+}
+
+// DataSize is the member's content size: the logical size for sparse
+// members (GNU lists the real size), the buffered data when the member
+// was loaded whole, otherwise the header's size field (streamed
 // members carry no Data).
 func (m *Member) DataSize() int64 {
+	if m.Sparse != nil {
+		return m.Size
+	}
 	if len(m.Data) > 0 {
 		return int64(len(m.Data))
 	}

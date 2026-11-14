@@ -329,7 +329,13 @@ func Diff(a *Archive, dir string, out io.Writer, warn func(string)) int {
 				diffs++
 				return nil
 			}
-			if !sameContent(fsPath, data) {
+			var same bool
+			if m.Sparse != nil {
+				same = sameSparseContent(fsPath, data, m.Sparse)
+			} else {
+				same = sameContent(fsPath, data)
+			}
+			if !same {
 				fmt.Fprintf(out, "%s: contents differ\n", name)
 				diffs++
 			}
@@ -393,6 +399,36 @@ func bytesEqual(a, b []byte) bool {
 	for i := range a {
 		if a[i] != b[i] {
 			return false
+		}
+	}
+	return true
+}
+
+// sameSparseContent compares a sparse member's extents, each at its
+// offset in the file, against the member's tight data stream.
+func sameSparseContent(fsPath string, data io.Reader, spans []member.SparseSpan) bool {
+	f, err := os.Open(fsPath)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var fb, db [32 * 1024]byte
+	for _, sp := range spans {
+		for left := sp.Len; left > 0; {
+			n := int64(len(fb))
+			if left < n {
+				n = left
+			}
+			if _, err := f.ReadAt(fb[:n], sp.Off+(sp.Len-left)); err != nil {
+				return false
+			}
+			if _, err := io.ReadFull(data, db[:n]); err != nil {
+				return false
+			}
+			if !bytesEqual(fb[:n], db[:n]) {
+				return false
+			}
+			left -= n
 		}
 	}
 	return true

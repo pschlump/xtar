@@ -75,7 +75,14 @@ func readAll(r *Reader) ([]member.Member, error) {
 			if err != nil {
 				return nil, err
 			}
-			if int64(len(data)) != m.Size {
+			want := m.Size
+			if m.Sparse != nil {
+				want = 0 // sparse: the extents' tight concatenation
+				for _, s := range m.Sparse {
+					want += s.Len
+				}
+			}
+			if int64(len(data)) != want {
 				return nil, fmt.Errorf("truncated archive: member %q", m.Name)
 			}
 			m.Data = data
@@ -107,6 +114,20 @@ type Reader struct {
 	notes      []string
 	done       bool
 	err        error
+
+	// Sparse state.  spans is the current member's map (nil = dense);
+	// Read serves each extent's bytes tight, skipping the per-extent
+	// block padding, so the data a visitor sees (and Parse buffers)
+	// is the extents' concatenation, not the stored form.
+	spans         []member.SparseSpan
+	spIdx         int   // extent being served
+	spOff         int64 // bytes served from it
+	sparsePending bool  // pax 1.0: the map rides in the first data blocks
+	sparseNext    bool  // the next member is sparse (map already known)
+	mapBlocks     int   // pax 1.0: map blocks consumed for this member
+	// pax 0.0 records repeat GNU.sparse.offset/numbytes, which a map
+	// collapses; they are collected in order instead.
+	spOffs, spLens []int64
 }
 
 // maxRecord caps the inline records (pax headers, GNU long names) so
@@ -151,6 +172,9 @@ func (t *Reader) Next() (*member.Member, error) {
 	if err := t.skipData(); err != nil {
 		return nil, t.fail(err)
 	}
+	t.spans, t.spIdx, t.spOff = nil, 0, 0
+	t.sparsePending, t.sparseNext, t.mapBlocks = false, false, 0
+	t.spOffs, t.spLens = t.spOffs[:0], t.spLens[:0]
 	blk := make([]byte, blockSize)
 	for {
 		n, err := io.ReadFull(t.br, blk)
@@ -212,23 +236,145 @@ func (t *Reader) Next() (*member.Member, error) {
 			}
 			continue
 		case 'S':
-			return nil, t.fail(fmt.Errorf("GNU sparse members are not supported yet (roadmap M4)"))
+			if err := t.readOldgnuSparse(h); err != nil {
+				return nil, t.fail(err)
+			}
 		}
 
 		m, err := t.buildMember(h)
 		if err != nil {
 			return nil, t.fail(err)
 		}
+		if t.sparseNext && t.sparsePending {
+			// pax 1.0: the map rides in the member's first data blocks
+			if err := t.readSparseMap(m.Name); err != nil {
+				return nil, t.fail(err)
+			}
+			m.Sparse = t.spans
+			if err := validateSpans(m.Name, t.spans, m.Size); err != nil {
+				return nil, t.fail(err)
+			}
+		}
 		t.left = h.size
 		t.pad = int64(padUp(int(h.size), blockSize)) - h.size
+		if t.spans != nil {
+			// Sparse members are consumed extent by extent (each
+			// padded to a block, the 1.0 map blocks already read),
+			// which is what the stream physically holds — the
+			// declared size may be the tight sum instead.
+			t.left, t.pad = m.StoredSize(), 0
+		}
 		return m, nil
 	}
 }
 
-// Read streams the current member's content.
+// readOldgnuSparse consumes the old GNU sparse ('S') map: up to four
+// extents in the header itself, then as many extension sparse headers
+// (21 extents each, isextended at byte 504) as it takes.  The spans
+// land in t.spans for buildMember.
+func (t *Reader) readOldgnuSparse(h readHdr) error {
+	var spans []member.SparseSpan
+	add := func(off, num int64) bool {
+		if off == 0 && num == 0 {
+			return false // an empty slot terminates the map
+		}
+		spans = append(spans, member.SparseSpan{Off: off, Len: num})
+		return true
+	}
+	for i := 0; i < 4; i++ {
+		if !add(h.sparse[i][0], h.sparse[i][1]) {
+			break
+		}
+	}
+	blk := make([]byte, blockSize)
+	for h.sparseExt {
+		n, err := io.ReadFull(t.br, blk)
+		t.pos += int64(n)
+		if err != nil {
+			return fmt.Errorf("truncated archive: sparse extension header: %w", err)
+		}
+		h.sparseExt = blk[504] == '1'
+		for i := 0; i < 21; i++ {
+			off, num := numeric(blk[24*i:24*i+12]), numeric(blk[24*i+12:24*i+24])
+			if !add(off, num) {
+				break
+			}
+		}
+	}
+	t.spans = spans
+	t.sparseNext = true
+	return nil
+}
+
+// readSparseMap parses the pax 1.0 sparse map from the member's
+// leading data blocks: newline-terminated decimal numbers (a count,
+// then offset/length pairs), NUL-padded to a block boundary.
+func (t *Reader) readSparseMap(name string) error {
+	var nums []int64
+	var carry []byte
+	complete := false
+	want := -1
+	blk := make([]byte, blockSize)
+	for !complete {
+		n, err := io.ReadFull(t.br, blk)
+		t.pos += int64(n)
+		t.mapBlocks++
+		if err != nil {
+			return fmt.Errorf("member %q: truncated sparse map: %w", name, err)
+		}
+		buf := append(carry, blk...)
+		carry = nil
+		for len(buf) > 0 {
+			if buf[0] == 0 {
+				complete = true // padding: the map's blocks end here
+				break
+			}
+			nl := bytes.IndexByte(buf, '\n')
+			if nl < 0 {
+				carry = append([]byte{}, buf...) // continues in the next block
+				break
+			}
+			v, err := strconv.ParseInt(string(buf[:nl]), 10, 64)
+			if err != nil || v < 0 {
+				return fmt.Errorf("member %q: malformed sparse map", name)
+			}
+			nums = append(nums, v)
+			buf = buf[nl+1:]
+			if want < 0 && len(nums) == 1 {
+				if v > 1<<20 {
+					return fmt.Errorf("member %q: sparse map claims %d extents", name, v)
+				}
+				want = int(v)
+			}
+			if want >= 0 && len(nums) == 1+2*want {
+				complete = true
+				break
+			}
+		}
+		if n < blockSize {
+			return fmt.Errorf("member %q: truncated sparse map", name)
+		}
+	}
+	if want < 0 || len(nums) != 1+2*want {
+		return fmt.Errorf("member %q: malformed sparse map", name)
+	}
+	spans := make([]member.SparseSpan, 0, want)
+	for i := 0; i < want; i++ {
+		spans = append(spans, member.SparseSpan{Off: nums[1+2*i], Len: nums[2+2*i]})
+	}
+	t.spans = spans
+	return nil
+}
+
+// Read streams the current member's content.  For a sparse member it
+// serves the extents' bytes tight, skipping the per-extent block
+// padding as it goes.
 func (t *Reader) Read(p []byte) (int, error) {
 	if t.err != nil {
 		return 0, t.err
+	}
+	if t.spans != nil {
+		return t.readSparse(p)
 	}
 	if t.left <= 0 {
 		return 0, io.EOF
@@ -248,6 +394,49 @@ func (t *Reader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	return n, err
+}
+
+// readSparse serves one read across the extent map: bytes from the
+// current extent, then its block padding is skipped, then the next
+// extent.  A zero-length extent (a trailing-hole marker) consumes
+// nothing from the stream.
+func (t *Reader) readSparse(p []byte) (int, error) {
+	total := 0
+	for total < len(p) {
+		if t.spIdx >= len(t.spans) {
+			if total > 0 {
+				return total, nil
+			}
+			return 0, io.EOF
+		}
+		sp := t.spans[t.spIdx]
+		if remain := sp.Len - t.spOff; remain > 0 {
+			n := remain
+			if avail := int64(len(p) - total); avail < n {
+				n = avail
+			}
+			nn, err := io.ReadFull(t.br, p[total:total+int(n)])
+			total += nn
+			t.spOff += int64(nn)
+			t.left -= int64(nn)
+			t.pos += int64(nn)
+			if err != nil {
+				return total, t.fail(io.ErrUnexpectedEOF)
+			}
+			continue
+		}
+		// the extent is done: skip its padding to the next block
+		if pad := int64(padUp(int(sp.Len), blockSize)) - sp.Len; pad > 0 {
+			if _, err := io.CopyN(io.Discard, t.br, pad); err != nil {
+				return total, t.fail(io.ErrUnexpectedEOF)
+			}
+			t.left -= pad
+			t.pos += pad
+		}
+		t.spIdx++
+		t.spOff = 0
+	}
+	return total, nil
 }
 
 // probeTrailing mimics the whole-buffer parse's trailing-garbage
@@ -318,6 +507,20 @@ func (t *Reader) applyRecord(typeflag byte, data []byte) {
 			return
 		}
 		for k, v := range recs {
+			// pax 0.0 repeats the sparse pair keys, which a map
+			// collapses — collect them in order instead.
+			switch k {
+			case "GNU.sparse.offset":
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+					t.spOffs = append(t.spOffs, n)
+				}
+				continue
+			case "GNU.sparse.numbytes":
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+					t.spLens = append(t.spLens, n)
+				}
+				continue
+			}
 			t.pending[k] = v
 		}
 		t.paxSeen = true
@@ -347,6 +550,13 @@ type readHdr struct {
 	devmajor, devminor  int64
 	typeflag            byte
 	prefix              string
+
+	// Old GNU sparse ('S') header fields: four map slots, the
+	// extension flag, and the real (logical) file size.
+	sparse    [4][2]int64
+	sparseExt bool
+	realsize  int64
+	hasSparse bool
 }
 
 func decodeHeader(blk []byte) (h readHdr) {
@@ -365,6 +575,14 @@ func decodeHeader(blk []byte) (h readHdr) {
 	h.devminor = numeric(blk[337:345])
 	if h.magic == "ustar\x00" {
 		h.prefix = cstr(blk[345:500])
+	}
+	if h.typeflag == 'S' {
+		h.hasSparse = true
+		for i := 0; i < 4; i++ {
+			h.sparse[i] = [2]int64{numeric(blk[386+24*i : 398+24*i]), numeric(blk[398+24*i : 410+24*i])}
+		}
+		h.sparseExt = blk[482] == '1'
+		h.realsize = numeric(blk[483:495])
 	}
 	return h
 }
@@ -421,9 +639,9 @@ func (t *Reader) buildMember(h readHdr) (*member.Member, error) {
 		m.Kind = member.Directory
 	case '6':
 		m.Kind = member.FIFO
-	default: // '0', '\0', '7', and anything unrecognized
+	default: // '0', '\0', '7', 'S', and anything unrecognized
 		m.Kind = member.Regular
-		if h.typeflag != '0' && h.typeflag != 0 && h.typeflag != '7' {
+		if h.typeflag != '0' && h.typeflag != 0 && h.typeflag != '7' && h.typeflag != 'S' {
 			t.notes = append(t.notes, fmt.Sprintf("unknown typeflag %q treated as a regular file", h.typeflag))
 		}
 	}
@@ -446,9 +664,8 @@ func (t *Reader) buildMember(h readHdr) (*member.Member, error) {
 		m.Gname = v
 	}
 	if v, ok := rec["mtime"]; ok {
-		if f, err := strconv.ParseFloat(v, 64); err == nil {
-			sec := int64(f)
-			m.ModTime = time.Unix(sec, int64((f-float64(sec))*1e9))
+		if sec, ns, ok := parsePaxTime(v); ok {
+			m.ModTime = time.Unix(sec, ns)
 		}
 	}
 	if v, ok := rec["size"]; ok {
@@ -456,16 +673,138 @@ func (t *Reader) buildMember(h readHdr) (*member.Member, error) {
 			t.notes = append(t.notes, fmt.Sprintf("member %q: pax size %d replaced by stored %d", full, n, h.size))
 		}
 	}
-	for k := range rec {
-		if strings.HasPrefix(k, "GNU.sparse.") {
-			return nil, fmt.Errorf("PAX sparse members are not supported yet (roadmap M4)")
-		}
-	}
 
 	if m.Kind == member.Regular || m.Kind == member.Directory {
 		m.Size = h.size
 	}
+
+	// GNU sparse members.  The old-GNU 'S' header carries its map (and
+	// the real size) directly; the pax flavors carry it in records —
+	// version 1.0 defers the actual map to the member's first data
+	// blocks, 0.0/0.1 repeat offset/numbytes pairs or give a comma
+	// list.  GNU.sparse.size is the REAL size in 0.x records;
+	// GNU.sparse.realsize is 1.0's.  The member header then holds a
+	// dummy name (GNUSparseFile.N/…) that GNU.sparse.name overrides.
+	paxMajor := false
+	if v, ok := rec["GNU.sparse.major"]; ok {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			paxMajor = true
+		}
+	}
+	recSparse := paxMajor ||
+		rec["GNU.sparse.numblocks"] != "" ||
+		rec["GNU.sparse.map"] != "" ||
+		len(t.spOffs) > 0
+	if h.hasSparse || recSparse {
+		if !h.hasSparse {
+			if n, ok := rec["GNU.sparse.name"]; ok && n != "" {
+				a := &Archive{Variant: t.variant}
+				full = cleanName(n, a)
+				t.notes = append(t.notes, a.Notes...)
+				m.Name = full
+			}
+		}
+		m.Kind = member.Regular
+		realsize := h.realsize
+		if !h.hasSparse {
+			realsize = h.size
+			if v, ok := rec["GNU.sparse.realsize"]; ok {
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+					realsize = n
+				}
+			}
+			if v, ok := rec["GNU.sparse.size"]; ok {
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+					realsize = n
+				}
+			}
+		}
+		m.Size = realsize
+		if h.hasSparse {
+			// spans were read from the 'S' header in Next
+			t.sparseNext = true
+		} else if paxMajor {
+			t.sparseNext, t.sparsePending = true, true
+		} else {
+			spans, err := t.spansFromRecords(full)
+			if err != nil {
+				return nil, err
+			}
+			t.spans, t.sparseNext = spans, true
+		}
+		if err := validateSpans(full, t.spans, m.Size); err != nil {
+			return nil, err
+		}
+		m.Sparse = t.spans
+	}
 	return &m, nil
+}
+
+// spansFromRecords builds the extent map for the pax 0.x flavors:
+// GNU.sparse.map's flat comma list ("off,len,off,len,…"), or the
+// ordered offset/numbytes record pairs applyRecord collected.
+func (t *Reader) spansFromRecords(name string) ([]member.SparseSpan, error) {
+	var spans []member.SparseSpan
+	if s := t.pending["GNU.sparse.map"]; s != "" {
+		parts := strings.Split(s, ",")
+		if len(parts)%2 != 0 {
+			return nil, fmt.Errorf("member %q: malformed sparse map", name)
+		}
+		for i := 0; i < len(parts); i += 2 {
+			off, err1 := strconv.ParseInt(parts[i], 10, 64)
+			num, err2 := strconv.ParseInt(parts[i+1], 10, 64)
+			if err1 != nil || err2 != nil || off < 0 || num < 0 {
+				return nil, fmt.Errorf("member %q: malformed sparse map", name)
+			}
+			spans = append(spans, member.SparseSpan{Off: off, Len: num})
+		}
+		return spans, nil
+	}
+	if len(t.spOffs) != len(t.spLens) || len(t.spOffs) == 0 {
+		return nil, fmt.Errorf("member %q: malformed sparse records", name)
+	}
+	for i := range t.spOffs {
+		spans = append(spans, member.SparseSpan{Off: t.spOffs[i], Len: t.spLens[i]})
+	}
+	return spans, nil
+}
+
+// parsePaxTime reads a pax timestamp — decimal seconds with an
+// optional fraction — without float rounding (123456789 nanoseconds
+// must survive the round trip).
+func parsePaxTime(v string) (sec, ns int64, ok bool) {
+	intPart, fracPart, hasFrac := strings.Cut(v, ".")
+	sec, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	if !hasFrac {
+		return sec, 0, true
+	}
+	if len(fracPart) > 9 {
+		fracPart = fracPart[:9]
+	}
+	for len(fracPart) < 9 {
+		fracPart += "0"
+	}
+	ns, err = strconv.ParseInt(fracPart, 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return sec, ns, true
+}
+
+// validateSpans applies GNU's sanity rules: non-negative, inside the
+// logical file, and in order.
+func validateSpans(name string, spans []member.SparseSpan, realsize int64) error {
+	var end int64
+	for _, s := range spans {
+		if s.Off < 0 || s.Len < 0 || s.Off+s.Len > realsize || s.Off < end {
+			return fmt.Errorf("member %q: invalid sparse archive member", name)
+		}
+		end = s.Off + s.Len
+	}
+	return nil
 }
 
 // cleanName strips the leading "/" GNU tar warns about and the
@@ -522,6 +861,14 @@ func (ew *errWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
+// fail records err (first one wins), the Read-side fail pattern.
+func (ew *errWriter) fail(err error) error {
+	if ew.err == nil {
+		ew.err = err
+	}
+	return ew.err
+}
+
 func (ew *errWriter) writeString(s string) {
 	if ew.err != nil {
 		return
@@ -566,7 +913,10 @@ func (t *Writer) WriteMember(m *member.Member) error {
 	if t.ew.err != nil {
 		return t.ew.err
 	}
-	writeMember(&t.ew, t.format, m)
+	if err := writeMember(&t.ew, t.format, m); err != nil {
+		t.ew.fail(err) // sticky, like an io error
+		return err
+	}
 	return t.ew.err
 }
 
@@ -612,6 +962,12 @@ type hdrSpec struct {
 	uname, gname                string
 	devmajor, devminor          int64
 	base256                     bool // allow base-256 for big numbers
+
+	// Old-GNU sparse ('S') additions: the first four extents, the
+	// extension flag (implied by more than four), and the real size.
+	sparse   bool
+	spans    []member.SparseSpan
+	realsize int64
 }
 
 func writeMember(w *errWriter, format string, m *member.Member) error {
@@ -659,8 +1015,48 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 			}
 		}
 		if format == "pax" && m.ModTime.Nanosecond() != 0 {
-			paxMtime = strconv.FormatFloat(float64(m.ModTime.Unix())+float64(m.ModTime.Nanosecond())/1e9, 'g', 9, 64)
+			paxMtime = fmt.Sprintf("%d.%09d", m.ModTime.Unix(), m.ModTime.Nanosecond())
 			needPax = true
+		}
+	}
+
+	// pax numeric overflow records: the ustar fields hold 7 octal
+	// digits for uid/gid and 11 for size; anything larger rides in
+	// the extended header with zeros in the fields.
+	var paxUID, paxGID, paxSize bool
+	if format == "pax" {
+		if int64(m.UID) > 0o7777777 {
+			paxUID = true
+			needPax = true
+		}
+		if int64(m.GID) > 0o7777777 {
+			paxGID = true
+			needPax = true
+		}
+		if m.Kind == member.Regular && m.Size > 0o77777777777 {
+			paxSize = true
+			needPax = true
+		}
+	}
+
+	if m.Sparse != nil {
+		if err := validateSpans(m.Name, m.Sparse, m.Size); err != nil {
+			return err
+		}
+		var tight int64
+		for _, sp := range m.Sparse {
+			tight += sp.Len
+		}
+		if tight != int64(len(m.Data)) {
+			return fmt.Errorf("member %q: sparse data is %d bytes but the extents claim %d", m.Name, len(m.Data), tight)
+		}
+		switch format {
+		case "gnu":
+			return writeSparseOldgnu(w, m)
+		case "pax":
+			needPax = true // the map records ride in the x header
+		default:
+			return fmt.Errorf("member %q: the %s format cannot store sparse members (use gnu or pax)", m.Name, format)
 		}
 	}
 
@@ -674,6 +1070,21 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 		}
 		if paxMtime != "" {
 			appendPaxRecord(&recs, "mtime", paxMtime)
+		}
+		if paxUID {
+			appendPaxRecord(&recs, "uid", strconv.FormatInt(int64(m.UID), 10))
+		}
+		if paxGID {
+			appendPaxRecord(&recs, "gid", strconv.FormatInt(int64(m.GID), 10))
+		}
+		if paxSize {
+			appendPaxRecord(&recs, "size", strconv.FormatInt(m.Size, 10))
+		}
+		if m.Sparse != nil { // format == "pax" (checked above)
+			appendPaxRecord(&recs, "GNU.sparse.major", "1")
+			appendPaxRecord(&recs, "GNU.sparse.minor", "0")
+			appendPaxRecord(&recs, "GNU.sparse.name", m.Name)
+			appendPaxRecord(&recs, "GNU.sparse.realsize", strconv.FormatInt(m.Size, 10))
 		}
 		hdrName := "PaxHeaders.0/" + path.Base(name)
 		if len(hdrName) > 100 {
@@ -714,9 +1125,26 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 	if m.Kind != member.Regular && m.Kind != member.Directory {
 		size = 0
 	}
+	uid, gid := int64(m.UID), int64(m.GID)
+	if paxUID {
+		uid = 0
+	}
+	if paxGID {
+		gid = 0
+	}
+	if paxSize {
+		size = 0
+	}
+	if m.Sparse != nil { // pax 1.0: dummy name, map blocks + extents
+		prefix, base = "", gnuSparseDummyName(name)
+		size = int64(sparseMapBlocks(m))*blockSize + m.StoredSize()
+		if len(base) > 100 {
+			base = base[:100]
+		}
+	}
 	err := writeHeader(w, format, hdrSpec{
 		name: base, link: link, prefix: prefix,
-		mode: int64(m.Mode & 0o7777), uid: int64(m.UID), gid: int64(m.GID),
+		mode: int64(m.Mode & 0o7777), uid: uid, gid: gid,
 		size: size, mtime: m.ModTime.Unix(), typeflag: typeflag,
 		uname: m.Uname, gname: m.Gname,
 		devmajor: int64(m.DevMajor), devminor: int64(m.DevMinor),
@@ -725,11 +1153,135 @@ func writeMember(w *errWriter, format string, m *member.Member) error {
 	if err != nil {
 		return err
 	}
+	if m.Sparse != nil {
+		writeSparseMapBlock(w, m)
+		writeSparseExtents(w, m)
+		return w.err
+	}
 	if m.Kind == member.Regular && len(m.Data) > 0 {
 		w.Write(m.Data)
 		padToBlock(w, len(m.Data))
 	}
 	return w.err
+}
+
+// writeSparseOldgnu writes an old-GNU sparse member: the 'S' header
+// (four extents inline, realsize at 483, isextended when more follow),
+// one extension sparse header per further 21 extents, then the extents
+// each padded to a block.
+func writeSparseOldgnu(w *errWriter, m *member.Member) error {
+	name := m.Name
+	if len(name) > 100 {
+		name = name[:100] // the L record written above carries the rest
+	}
+	if err := writeHeader(w, "gnu", hdrSpec{
+		name: name,
+		mode: int64(m.Mode & 0o7777), uid: int64(m.UID), gid: int64(m.GID),
+		size: m.StoredSize(), mtime: m.ModTime.Unix(), typeflag: 'S',
+		uname: m.Uname, gname: m.Gname,
+		devmajor: int64(m.DevMajor), devminor: int64(m.DevMinor),
+		base256:  true,
+		sparse:   true,
+		spans:    m.Sparse,
+		realsize: m.Size,
+	}); err != nil {
+		return err
+	}
+	rest := []member.SparseSpan(nil)
+	if len(m.Sparse) > 4 {
+		rest = m.Sparse[4:]
+	}
+	for i := 0; i < len(rest); i += 21 {
+		n := len(rest) - i
+		if n > 21 {
+			n = 21
+		}
+		writeSparseExtHeader(w, rest[i:i+n], len(rest)-i > 21)
+	}
+	writeSparseExtents(w, m)
+	return w.err
+}
+
+// writeSparseExtHeader writes one old-GNU extension sparse header: 21
+// extent slots from byte 0, isextended at 504.  GNU tar writes no
+// checksum for these blocks — the slots run straight through the
+// checksum's usual bytes — and its reader verifies none.
+func writeSparseExtHeader(w *errWriter, spans []member.SparseSpan, more bool) {
+	var blk [blockSize]byte
+	for i, sp := range spans {
+		putNum(blk[24*i:24*i+12], sp.Off, false)
+		putNum(blk[24*i+12:24*i+24], sp.Len, false)
+	}
+	if more {
+		blk[504] = '1'
+	}
+	w.Write(blk[:])
+}
+
+// writeSparseExtents writes the member's extent bytes, each padded to
+// a block — the stored form every GNU sparse flavor shares.  Zero-
+// length extents (a trailing-hole marker) write nothing.
+func writeSparseExtents(w *errWriter, m *member.Member) {
+	pos := 0
+	for _, sp := range m.Sparse {
+		if sp.Len == 0 {
+			continue
+		}
+		w.Write(m.Data[pos : pos+int(sp.Len)])
+		padToBlock(w, int(sp.Len))
+		pos += int(sp.Len)
+	}
+}
+
+// sparseMapString renders the pax 1.0 map: the extent count, then each
+// offset and length, one decimal number per newline-terminated line.
+func sparseMapString(m *member.Member) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d\n", len(m.Sparse))
+	for _, sp := range m.Sparse {
+		fmt.Fprintf(&b, "%d\n%d\n", sp.Off, sp.Len)
+	}
+	return b.String()
+}
+
+// sparseMapBlocks is how many 512-byte blocks the pax 1.0 map occupies
+// (NUL-padded to a block boundary, like GNU writes it).
+func sparseMapBlocks(m *member.Member) int {
+	return padUp(len(sparseMapString(m)), blockSize) / blockSize
+}
+
+// writeSparseMapBlock writes the pax 1.0 map blocks ahead of the data.
+func writeSparseMapBlock(w *errWriter, m *member.Member) {
+	s := sparseMapString(m)
+	w.writeString(s)
+	padToBlock(w, len(s))
+}
+
+// gnuSparseDummyName is the placeholder a pax 1.0 sparse member's
+// ustar header carries ("<dir>/GNUSparseFile.0/<base>"); the real name
+// rides in the GNU.sparse.name record.
+func gnuSparseDummyName(name string) string {
+	i := strings.LastIndex(name, "/")
+	if i < 0 {
+		return "GNUSparseFile.0/" + name
+	}
+	return name[:i+1] + "GNUSparseFile.0/" + name[i+1:]
+}
+
+// finishChecksum fills a header block's checksum field: the byte sum
+// with the field as eight spaces, six octal digits, NUL, space.
+func finishChecksum(blk []byte) {
+	var sum int64
+	for i, b := range blk {
+		if i >= 148 && i < 156 {
+			sum += ' '
+		} else {
+			sum += int64(b)
+		}
+	}
+	copy(blk[148:156], fmt.Sprintf("%06o", sum))
+	blk[154] = 0
+	blk[155] = ' '
 }
 
 func writeHeader(w *errWriter, format string, s hdrSpec) error {
@@ -776,6 +1328,22 @@ func writeHeader(w *errWriter, format string, s hdrSpec) error {
 	}
 	if format == "ustar" || format == "pax" {
 		copy(blk[345:500], s.prefix)
+	}
+	if s.sparse {
+		for i := 0; i < 4 && i < len(s.spans); i++ {
+			if err := putNum(blk[386+24*i:398+24*i], s.spans[i].Off, false); err != nil {
+				return err
+			}
+			if err := putNum(blk[398+24*i:410+24*i], s.spans[i].Len, false); err != nil {
+				return err
+			}
+		}
+		if len(s.spans) > 4 {
+			blk[482] = '1'
+		}
+		if err := putNum(blk[483:495], s.realsize, false); err != nil {
+			return err
+		}
 	}
 
 	// Checksum: the byte sum of the block with the checksum field as

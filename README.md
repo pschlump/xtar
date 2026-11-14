@@ -228,7 +228,7 @@ they don't conflict).
   `--overwrite`, `--skip-old-files`, `--strip-components=N`, `--exclude=PATTERN`,
   `-T/--files-from`, `--null`, `--transform`, `-w`, `-W/--verify`, `--totals`,
   `--numeric-owner`, `--owner/--group`, `--format=gnu|pax|ustar|v7`,
-  compression flags `-z -j -J --zstd -Z -a`.
+  `-S/--sparse`, compression flags `-z -j -J --zstd -Z -a`.
 * Auto-detect on read; auto-compress and format-by-extension on write.
 * Default write format is GNU (`gnu`) to match GNU tar; `--format` overrides.
 * Append/update/delete work only on uncompressed tar — a compressed or
@@ -429,10 +429,18 @@ policy with dialect-native spellings.
   subject to the same path-safety rules as member names.
 * **Filename encoding.** PAX `hdrcharset` and ustar UTF-8 are honored; zip
   uses the EFS (UTF-8) bit when set, else CP437; cpio newc has no declared
-  charset — bytes pass through. `--encoding=` converts member names on read
-  (zips created by old Windows tools are the usual customer).
-* **Sparse files.** GNU/PAX sparse tar records are read correctly; writing
-  sparse is M4.
+  charset — bytes pass through. `--encoding=` (unzip `-O`) converts member
+  names on read: `utf-8`, `cp437`, `iso-8859-1`, `mac-roman` (zips created
+  by old Windows and classic-Mac tools are the usual customers; names a
+  container declares UTF-8 are left alone).
+* **Sparse files.** All GNU sparse tar flavors are read — old-GNU `'S'`
+  headers with extension headers, PAX 1.0 (map in the data blocks), and
+  PAX 0.0/0.1 (records) — and `-S`/`--sparse` writes them: the old-GNU
+  form under `--format=gnu`, PAX 1.0 under `--format=pax`. Extraction
+  re-creates the holes; the logical size is what listings show. Hole
+  detection follows SEEK_DATA/SEEK_HOLE and falls back to a block scan,
+  so zero-filled-but-allocated files (APFS allocates truncate holes)
+  still store sparsely.
 * **Concatenation.** Multi-member gzip and concatenated lz4 frames are read.
   Spanned zip is *sniffed* (the `PK\x07\x08` markers) but split assembly is
   not implemented — it errors clearly until M5; split-zip *writing*
@@ -507,7 +515,7 @@ file, and a bare compressed stream is a single member.
   the tar/cpio/zip containers and every codec layer — which covers every
   task that does not require the native container.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
-  macOS resource forks — PAX-limited in M4 alongside sparse.
+  macOS resource forks — still out (sparse and PAX write shipped in M4).
 * **Hidden password entry.** Password and replace prompts read plain lines,
   so typed input echoes; no-echo needs a terminal raw-mode layer (M4).
 
@@ -601,7 +609,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M1** | skeleton: argv[0] dispatch, sniffing/peel engine, `--sniff`; tar dialect read+write (v7/ustar/GNU read, GNU write; PAX read) over the gzip layer; extract/list/create with path safety | ✅ shipped — 9c0c43a |
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
-| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | 🔄 in progress — pluto 370df4b + streaming create (44756aa) + streaming read (tar/cpio through `Archive.Each`; zip and bare stay whole-buffer by design) |
+| **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | 🔄 in progress — streaming create (44756aa) + streaming read (23c43ab) + PAX write, sparse tar (`-S`), `--encoding` (M4c); only terminal raw-mode (M4d) remains |
 | **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 

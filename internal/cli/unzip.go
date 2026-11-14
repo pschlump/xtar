@@ -30,6 +30,7 @@ var unzipSpecs = []opt{
 	{long: "password", short: 'P', arg: true},
 	{long: "text", short: 'a'},
 	{long: "zipinfo-mode", short: 'Z'},
+	{long: "encoding", short: 'O', arg: true}, // -O: charset of stored names
 	{long: "help", short: 'h'},
 }
 
@@ -38,7 +39,7 @@ func Unzip(name string, argv []string) int {
 	e := &env{name: name}
 	st := newArgStream(unzipSpecs, argv, false)
 
-	var password, dest string
+	var password, dest, encoding string
 	var operands, excludes []string
 	var print, list, verbose, test, overwrite, never, junk, quiet, zipinfoMode bool
 
@@ -80,6 +81,8 @@ func Unzip(name string, argv []string) int {
 			password = t.value
 		case o.short == 'Z':
 			zipinfoMode = true
+		case o.short == 'O':
+			encoding = t.value
 		default:
 			// -a/-h: accepted, no effect
 		}
@@ -107,6 +110,9 @@ func Unzip(name string, argv []string) int {
 		return e.fatal("%v", err)
 	}
 	defer a.Close()
+	if err := a.SetEncoding(encoding); err != nil {
+		return e.fatal("%v", err)
+	}
 	for _, n := range a.Notes {
 		e.warnf("%s", n)
 	}
