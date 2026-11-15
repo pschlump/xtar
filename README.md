@@ -618,7 +618,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
 | **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 8ba8ccf |
-| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar wiring ZSTDW |
+| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar wiring 23d40c6 |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 
 M3 landed ahead of the plan in three places and short in one: zip64 is
