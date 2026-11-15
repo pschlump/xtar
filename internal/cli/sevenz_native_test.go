@@ -7,9 +7,11 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -59,4 +61,43 @@ func TestSevenzNative(t *testing.T) {
 	if out, err := exec.Command(bin, "t", native).CombinedOutput(); err != nil {
 		t.Fatalf("system 7z t ours: %v: %s", err, out)
 	}
+}
+
+// TestSevenzBenchHash: the benchmark round-trips every codec and the
+// hash verb matches independent digests.
+func TestSevenzBenchHash(t *testing.T) {
+	if testing.Short() {
+		t.Skip("benchmark runs the full corpus")
+	}
+	if code := Sevenz("7z", []string{"b"}); code != exitOK {
+		t.Fatalf("b exit %d", code)
+	}
+	dir, _ := os.MkdirTemp("", "hash")
+	defer os.RemoveAll(dir)
+	f := filepath.Join(dir, "f.txt")
+	if err := os.WriteFile(f, []byte("hash me please\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := captureStdout(t, func() int { return Sevenz("7z", []string{"h", f}) })
+	if !strings.Contains(out, "c02f9f6e") || !strings.Contains(out, "1cc0bc3f0c48143efc66a65368bd745ce8bf4e30fcddcaf1b0d0d56417eb899c") {
+		t.Fatalf("h output: %s", out)
+	}
+}
+
+func captureStdout(t *testing.T, run func() int) string {
+	t.Helper()
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	code := run()
+	w.Close()
+	os.Stdout = old
+	buf, _ := io.ReadAll(r)
+	if code != exitOK {
+		t.Fatalf("exit %d", code)
+	}
+	return string(buf)
 }

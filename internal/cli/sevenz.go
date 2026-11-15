@@ -111,6 +111,15 @@ func Sevenz(name string, argv []string) int {
 	if len(positional) > 1 {
 		args = positional[1:]
 	}
+	switch cmd {
+	case "b": // benchmark takes no archive
+		return SevenzBench(e)
+	case "h": // hash takes bare files
+		if len(args) == 0 {
+			return e.fatal("the h command needs at least one file")
+		}
+		return SevenzHash(e, args)
+	}
 	if len(args) < 1 {
 		return e.fatal("the %s command needs an archive name", cmd)
 	}
