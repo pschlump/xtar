@@ -149,12 +149,41 @@ func TestCreateTarXz(t *testing.T) {
 func TestCreateUnsupportedExtension(t *testing.T) {
 	tree(t)
 	_, err := Create(&CreateOpts{
-		Path:             filepath.Join(t.TempDir(), "a.tar.zst"),
+		Path:             filepath.Join(t.TempDir(), "a.tar.7z"),
 		DefaultContainer: "tar",
 		Walk:             walkFiles([]string{"proj"}),
 	})
-	if err == nil || !strings.Contains(err.Error(), "zstd") {
-		t.Fatalf("want zstd unsupported error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "7z") {
+		t.Fatalf("want 7z unsupported error, got %v", err)
+	}
+}
+
+func TestCreateTarZstd(t *testing.T) {
+	tree(t)
+	out := filepath.Join(t.TempDir(), "a.tar.zst")
+	a, err := Create(&CreateOpts{
+		Path:             out,
+		Codec:            "zstd",
+		DefaultContainer: "tar",
+		Walk:             walkFiles([]string{"proj"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Format != "tar" || len(a.Layers) != 1 || a.Layers[0] != "zstd" {
+		t.Fatalf("resolve: format=%s layers=%v", a.Format, a.Layers)
+	}
+	b, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer b.Close()
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := Extract(b, &ExtractOpts{Dest: dst, Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dst, "proj/a.txt")); err != nil {
+		t.Fatal("a.txt missing after zstd round trip")
 	}
 }
 

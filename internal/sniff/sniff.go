@@ -53,7 +53,7 @@ func Detect(b []byte) Result {
 	case has(b, 0, "\xfd7zXZ\x00"):
 		return Result{"xz", Compression, ""}
 	case has(b, 0, "\x28\xb5\x2f\xfd"):
-		return Result{"zstd", Unsupported, ""}
+		return Result{"zstd", Compression, ""}
 	}
 
 	// Containers.

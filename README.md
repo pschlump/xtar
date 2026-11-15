@@ -117,7 +117,7 @@ Every archive xtar handles decomposes along two independent axes:
 1. **Container** — how members are catalogued: `tar` (v7/ustar/GNU/PAX),
    `cpio` (binary/odc/newc/crc), `zip`, `7z`.
 2. **Stream compression** — a whole-stream transform wrapped *around* a
-   container: gzip, bzip2, compress(.Z), lz4, xz, lzma (zstd — planned).
+   container: gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd.
 
 tar-family tools put compression *outside* the container. zip and 7z compress
 *inside*, per member. Both axes can stack, so a file is an onion to peel:
@@ -153,7 +153,7 @@ ambiguity and drives *creation*; sniffing decides *reading*.
 | compress .Z   | `1f 9d` (or `1f a0`)                      | LSB-first LZW, block mode                |
 | bzip2         | `"BZh"` + level digit                     | block magic `1AY&SY` follows             |
 | xz            | `fd 37 7a 58 5a 00`                       | xz (pluto, M5)                           |
-| zstd          | `28 b5 2f fd`                             | *planned*                                |
+| zstd          | `28 b5 2f fd`                             | zstd (pluto, M5)                         |
 | lz4 frame     | `04 22 4d 18`                             | skippable + concatenated frames ok       |
 | zip           | `PK\x03\x04` / `PK\x05\x06` (empty) / `PK\x07\x08` (spanned) | zip64 supported          |
 | 7z            | `7z\xbc\xaf\x27\x1c`                      | *planned*                                |
@@ -192,8 +192,8 @@ the bsdtar write-by-extension precedent):
 | `.tar`                          | tar (GNU format default, see below) |
 | `.tgz`, `.taz`, `.tar.gz`       | gzip( tar )                    |
 | `.tbz`, `.tbz2`, `.tz2`, `.tar.bz2` | bzip2( tar )               |
-| `.txz`, `.tar.xz`               | xz( tar ) *planned*            |
-| `.tzst`, `.tar.zst`             | zstd( tar ) *planned*          |
+| `.txz`, `.tar.xz`               | xz( tar )                      |
+| `.tzst`, `.tar.zst`             | zstd( tar )                    |
 | `.tar.Z`, `.taZ`                | compress( tar )                |
 | `.tar.lz4`                      | lz4( tar )                     |
 | `.cpio`                         | cpio newc                      |
@@ -488,7 +488,7 @@ variants (different wire formats) and are **not** used for any archive format
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
 | zip-LZMA (method 14), 7z (LZMA/LZMA2) | decoder shipped in pluto (`lzma`); container wiring pending |
-| `.tar.zst`, zip-zstd | zstd (pluto)     |
+| zip-zstd (method 20) | decoder shipped in pluto (`zstd`); container wiring pending |
 | 7z container      | 7z parsing + LZMA + BCJ filters + AES |
 | PPMd (7z, zip method 98) | PPMd (pluto)  |
 
@@ -618,7 +618,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
 | **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 8ba8ccf |
-| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe |
+| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar wiring ZSTDW |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 
 M3 landed ahead of the plan in three places and short in one: zip64 is

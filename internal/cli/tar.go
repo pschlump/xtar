@@ -163,7 +163,7 @@ func Tar(name string, argv []string) int {
 		case o.long == "lzma":
 			codec = "lzma"
 		case o.long == "zstd":
-			return e.fatal("%v", eng.UnsupportedError("zstd"))
+			codec = "zstd"
 		case o.long == "lzip":
 			return e.fatal("%v", eng.UnsupportedError("lzip"))
 		case o.long == "lz4":

@@ -25,6 +25,7 @@ import (
 	"github.com/pschlump/pluto/lzma"
 	"github.com/pschlump/pluto/xz"
 	"github.com/pschlump/pluto/zlib"
+	"github.com/pschlump/pluto/zstd"
 	"github.com/pschlump/xtar/internal/sniff"
 )
 
@@ -82,6 +83,7 @@ var byName = map[string]Codec{
 	"deflate":  wrap("deflate", deflate.Compress, deflateExpand),
 	"xz":       wrap("xz", xz.Compress, xz.Expand),
 	"lzma":     wrap("lzma", lzma.Compress, lzma.Expand),
+	"zstd":     wrap("zstd", zstd.Compress, zstd.Expand),
 }
 
 func deflateExpand(b []byte) []byte {
@@ -176,6 +178,10 @@ var streamByName = map[string]streamCodec{
 	"lzma": {
 		newReader: func(r io.Reader) io.ReadCloser { return lzma.NewReader(r) },
 		newWriter: func(w io.Writer) StreamWriter { return lzma.NewWriter(w) },
+	},
+	"zstd": {
+		newReader: func(r io.Reader) io.ReadCloser { return io.NopCloser(zstd.NewReader(r)) },
+		newWriter: func(w io.Writer) StreamWriter { return zstd.NewWriter(w) },
 	},
 }
 
