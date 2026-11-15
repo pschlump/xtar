@@ -109,9 +109,20 @@ func Sevenz(name string, argv []string) int {
 	case "x", "e":
 		return sevenzExtract(e, archive, files, password, outDir, cmd == "e", includes, excludes)
 	case "l":
-		return sevenzList(e, archive, includes, excludes)
+		if password == "" {
+			// 7z asks for the password when the archive needs one and
+			// none was given, like unzip.
+			if _, err := eng.SniffFile(archive); err != nil && strings.Contains(err.Error(), "password") {
+				password = promptPassword("Enter password: ")
+			}
+		}
+		return sevenzList(e, archive, password, includes, excludes)
 	case "t":
 		a, err := eng.OpenFile(archive, password)
+		if err != nil && password == "" && strings.Contains(err.Error(), "password") {
+			password = promptPassword("Enter password: ")
+			a, err = eng.OpenFile(archive, password)
+		}
 		if err != nil {
 			return e.fatal("%v", err)
 		}
@@ -234,8 +245,8 @@ func sevenzExtract(e *env, archive string, files []string, password, outDir stri
 	return exitOK
 }
 
-func sevenzList(e *env, archive string, includes, excludes []*pat.Pattern) int {
-	a, err := eng.OpenFile(archive, "")
+func sevenzList(e *env, archive string, password string, includes, excludes []*pat.Pattern) int {
+	a, err := eng.OpenFile(archive, password)
 	if err != nil {
 		return e.fatal("%v", err)
 	}

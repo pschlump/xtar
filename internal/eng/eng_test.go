@@ -8,6 +8,7 @@ package eng
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -352,5 +353,57 @@ func TestSniffFile(t *testing.T) {
 	}
 	if info.Format != "tar" || len(info.Layers) != 1 || info.Members == 0 {
 		t.Fatalf("sniff: %+v", info)
+	}
+}
+
+// TestOpen7z opens a native .7z (made by the 7-Zip CLI) through the
+// engine, extracts it, and compares the tree.
+func TestOpen7z(t *testing.T) {
+	bin, err := exec.LookPath("7zz")
+	if err != nil {
+		bin, err = exec.LookPath("7z")
+		if err != nil {
+			t.Skip("7-Zip CLI not installed")
+		}
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("alpha\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "sub", "b.txt"), []byte("beta\n"), 0o644)
+	out := filepath.Join(t.TempDir(), "a.7z")
+	cmd := exec.Command(bin, "a", "-t7z", out, "a.txt", "sub")
+	cmd.Dir = dir
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("7z: %v\n%s", err, b)
+	}
+
+	a, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Format != "7z" || len(a.Layers) != 0 {
+		t.Fatalf("resolve: %s %v", a.Format, a.Layers)
+	}
+	if len(a.Members) != 3 {
+		t.Fatalf("members %d: %v", len(a.Members), a.Members)
+	}
+	dst := filepath.Join(t.TempDir(), "out")
+	if err := Extract(a, &ExtractOpts{Dest: dst, Warn: func(string) {}}); err != nil {
+		t.Fatal(err)
+	}
+	for rel, want := range map[string]string{"a.txt": "alpha\n", "sub/b.txt": "beta\n"} {
+		got, err := os.ReadFile(filepath.Join(dst, rel))
+		if err != nil || string(got) != want {
+			t.Fatalf("%s: %q %v", rel, got, err)
+		}
+	}
+	if _, err := SniffFile(out); err != nil {
+		t.Fatalf("sniff: %v", err)
+	}
+	// updates refuse, clearly
+	if _, err := Update(&UpdateOpts{Path: out}); err == nil {
+		t.Fatal("native 7z update should refuse")
 	}
 }

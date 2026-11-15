@@ -156,7 +156,7 @@ ambiguity and drives *creation*; sniffing decides *reading*.
 | zstd          | `28 b5 2f fd`                             | zstd (pluto, M5)                         |
 | lz4 frame     | `04 22 4d 18`                             | skippable + concatenated frames ok       |
 | zip           | `PK\x03\x04` / `PK\x05\x06` (empty) / `PK\x07\x08` (spanned) | zip64 supported          |
-| 7z            | `7z\xbc\xaf\x27\x1c`                      | *planned*                                |
+| 7z            | `7z\xbc\xaf\x27\x1c`                      | 7z read (M5)                             |
 | ar            | `!<arch>\n`                               | read-side, not yet scheduled             |
 | rar           | `Rar!\x1a\x07`                            | out of scope (see [limits](#what-is-deliberately-not-supported-yet)) |
 | cpio (odc)    | `"070707"` at 0                           | ASCII portable                           |
@@ -199,7 +199,7 @@ the bsdtar write-by-extension precedent):
 | `.cpio`                         | cpio newc                      |
 | `.cpio.gz`, `.cpio.Z`, …        | compressed cpio, same table    |
 | `.zip`                          | zip, deflate level 6           |
-| `.7z`                           | 7z container *planned*         |
+| `.7z`                           | 7z container (read)            |
 
 Explicit flags override extensions: tar's `-z/-j/-J/--zstd/-Z` and
 `--format=`, cpio's `-H`, 7z's `-t`, and the global `--format=`. Creating
@@ -305,6 +305,11 @@ Compatible with p7zip's command/switch shape.
 * `e` vs `x` applies to every container: `7z e foo.tar.gz` flattens, matching
   p7zip's `e` semantics; compound archives extract in one step
   (7-Zip ≥ 15.06 behavior).
+* Native `.7z` archives read: every method the 7-Zip CLI writes by
+  default plus LZMA, LZMA2, delta, deflate, bzip2, copy, BCJ (x86),
+  and AES256 (content or `-mhe=on` header encryption — a `-p` password
+  or the prompt decrypts). 7z *creation* still routes through
+  tar/cpio/zip; native write is M6. `d`/`u` on a native `.7z` refuse.
 * `-t` maps to the global `--format=`; an unknown `-t` value is an error.
 
 ### xtar dialect
@@ -487,10 +492,9 @@ variants (different wire formats) and are **not** used for any archive format
 | needed for        | missing codec      |
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
-| zip-LZMA (method 14), 7z (LZMA/LZMA2) | decoder shipped in pluto (`lzma`); container wiring pending |
+| zip-LZMA (method 14) | decoder shipped in pluto (`lzma`); container wiring pending |
 | zip-zstd (method 20) | decoder shipped in pluto (`zstd`); container wiring pending |
-| 7z container      | 7z parsing + LZMA + BCJ filters + AES |
-| PPMd (7z, zip method 98) | PPMd (pluto)  |
+| PPMd (7z, zip method 98) | PPMd (pluto); 7z *write* is M6 |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
 `xtar: lzma/zstd compression not yet supported — see README "What is deliberately
@@ -618,7 +622,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
 | **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 8ba8ccf |
-| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar wiring 23d40c6 |
+| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar wiring 23d40c6 · 7z read SEVENZ |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 
 M3 landed ahead of the plan in three places and short in one: zip64 is

@@ -78,7 +78,8 @@ func ResolveByName(name, defaultContainer string) (Resolved, error) {
 		case sfx(base, ".zip"), sfx(base, ".jar"), sfx(base, ".war"), sfx(base, ".whl"):
 			r.Container = "zip"
 		case sfx(base, ".7z"):
-			return r, UnsupportedError("7z")
+			r.Container = "7z"
+			return r, nil
 		}
 		break
 	}

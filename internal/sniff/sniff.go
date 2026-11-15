@@ -65,7 +65,7 @@ func Detect(b []byte) Result {
 	case has(b, 0, "PK\x07\x08"):
 		return Result{"zip", Container, "spanned"}
 	case has(b, 0, "7z\xbc\xaf\x27\x1c"):
-		return Result{"7z", Unsupported, ""}
+		return Result{"7z", Container, ""}
 	case has(b, 0, "Rar!\x1a\x07"):
 		return Result{"rar", Unsupported, ""}
 	case has(b, 0, "!<arch>\n"):
