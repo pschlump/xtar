@@ -33,6 +33,7 @@ type CreateOpts struct {
 	CpioFormat       string // newc | crc | odc
 	ZipMethod        int    // zipfmt.Method*: -1 (unset) defaults to deflate
 	ZipPassword      string
+	ZipAES           int // WinZip AES strength (1-3) for zip output; 0 = traditional
 	ZipComment       string
 	EmptyOK          bool
 	Walk             walk.Opts
@@ -127,7 +128,11 @@ func Create(o *CreateOpts) (*Archive, error) {
 				mems[i].Encrypted = true
 			}
 		}
-		zipBlob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+		if o.ZipAES != 0 && o.ZipPassword != "" {
+			zipBlob, err = zipfmt.BuildAES(mems, o.ZipComment, o.ZipPassword, o.ZipAES)
+		} else {
+			zipBlob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+		}
 		if err != nil {
 			return nil, err
 		}

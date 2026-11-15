@@ -393,7 +393,41 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 	}
 
 	data := payload
-	if e.flags&flagEncrypted != 0 {
+	noCRC := false
+	if e.method == methodWinZipAES {
+		// WinZip AES: strength and the real method ride the 0x9901
+		// extra; the on-disk payload carries salt, verifier, CTR
+		// ciphertext, and an HMAC tag around it.
+		strength, realMethod, ok := findAESExtra(e.extra)
+		if !ok {
+			if strength, realMethod, ok = findAESExtra(extraAt(b, lh)); !ok {
+				return nil, fmt.Errorf("zip: member %s: missing AES extra field", e.name)
+			}
+		}
+		if password == "" {
+			return nil, fmt.Errorf("member %s is encrypted; a password is required (use -P)", e.name)
+		}
+		plain, err := aesUnwrap(data, strength, password)
+		if err != nil {
+			return nil, fmt.Errorf("zip: member %s: %w", e.name, err)
+		}
+		data = plain
+		e.method = uint16(realMethod)
+		e.csize = uint64(len(plain))
+		e.crc = 0 // AE-2 stores none; ...
+		e.flags &^= flagEncrypted
+		if m.Raw != nil {
+			// rebuilds carry the unwrapped compressed bytes, not the
+			// encrypted framing (fresh encryption happens on write)
+			m.Raw.Method = uint16(realMethod)
+			m.Raw.Flags = e.flags &^ flagDataDesc
+			m.Raw.CRC = 0
+			m.Raw.CompSize = uint64(len(plain))
+			m.Raw.Data = append([]byte(nil), plain...)
+			m.Raw.Encrypted = false
+		}
+		noCRC = true // ...the HMAC already authenticated
+	} else if e.flags&flagEncrypted != 0 {
 		if len(data) < 12 {
 			return nil, fmt.Errorf("zip: member %s: encrypted payload too short", e.name)
 		}
@@ -428,7 +462,7 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 	if uint64(len(data)) != e.usize {
 		return nil, fmt.Errorf("zip: member %s: size mismatch (stored %d, got %d)", e.name, e.usize, len(data))
 	}
-	if e.crc != 0 || len(data) > 0 {
+	if !noCRC && (e.crc != 0 || len(data) > 0) {
 		if sum := CRC32(data); sum != e.crc {
 			return nil, fmt.Errorf("zip: member %s: CRC mismatch (stored %08x, computed %08x)", e.name, e.crc, sum)
 		}
@@ -478,6 +512,20 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 	return m, nil
 }
 
+// extraAt returns the local header's extra-field bytes.
+func extraAt(b []byte, lh int64) []byte {
+	if lh < 0 || lh+30 > int64(len(b)) {
+		return nil
+	}
+	nLen := int64(binary.LittleEndian.Uint16(b[lh+26:]))
+	eLen := int64(binary.LittleEndian.Uint16(b[lh+28:]))
+	start := lh + 30 + nLen
+	if start+eLen > int64(len(b)) {
+		return nil
+	}
+	return b[start : start+eLen]
+}
+
 // ------------------------------------------------------------------
 // Write side
 // ------------------------------------------------------------------
@@ -487,7 +535,23 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 // untouched, so encrypted entries stay encrypted without needing the
 // password.  Fresh members with Encrypted set are ZipCrypto-encrypted
 // with password.
+// Build encodes mems as a zip archive with traditional (ZipCrypto)
+// encryption when a password is given.
 func Build(mems []member.Member, comment, password string) ([]byte, error) {
+	return buildZip(mems, comment, password, 0)
+}
+
+// BuildAES encodes mems as a zip archive with WinZip AES encryption
+// (strength 1, 2, or 3 for 128-, 192-, 256-bit keys) when a password
+// is given; without one it matches Build.
+func BuildAES(mems []member.Member, comment, password string, strength int) ([]byte, error) {
+	if _, _, ok := aesStrength(strength); !ok {
+		return nil, fmt.Errorf("zip: AES strength %d is not one of 1 (128), 2 (192), 3 (256)", strength)
+	}
+	return buildZip(mems, comment, password, strength)
+}
+
+func buildZip(mems []member.Member, comment, password string, aesStrengthLevel int) ([]byte, error) {
 	var out bytes.Buffer
 	offsets := make([]uint64, len(mems))
 
@@ -499,6 +563,7 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 		verMade       uint16
 		external      uint32
 		comment       string
+		aesExtra      []byte // WinZip AES 0x9901 record, local and central
 	}
 	cds := make([]cdInfo, len(mems))
 
@@ -554,12 +619,27 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 			if !isASCII(m.Name) {
 				flags |= flagEFS
 			}
+			var aesX []byte
+			aesMethod := false
 			if m.Encrypted {
 				if password == "" {
 					return nil, fmt.Errorf("zip: %s: encryption requested but no password was given", m.Name)
 				}
 				flags |= flagEncrypted
-				comp = zipEncrypt(password, comp, byte(csum>>24))
+				if aesStrengthLevel != 0 {
+					// WinZip AES: the real method rides the 0x9901
+					// extra, the CRC is dropped, and the payload grows
+					// by salt, verifier, and HMAC tag.
+					wrapped, err := aesWrap(comp, aesStrengthLevel, password)
+					if err != nil {
+						return nil, err
+					}
+					comp = wrapped
+					aesX = buildAESExtra(aesStrengthLevel, method)
+					aesMethod = true
+				} else {
+					comp = zipEncrypt(password, comp, byte(csum>>24))
+				}
 			}
 			payload = comp
 			// The UNIX mode word (type bits included) lives in the
@@ -579,6 +659,12 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 				verMade:  verMadeUNIX,
 				external: external,
 				comment:  m.Comment,
+				aesExtra: aesX,
+			}
+			if aesMethod {
+				info.method = methodWinZipAES
+				info.crc = 0
+				info.verMade = 3<<8 | 51 // AES entries are made by 5.1
 			}
 		}
 		cds[i] = info
@@ -595,8 +681,13 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 		if info.usize > max32 || info.csize > max32 {
 			lextra = zip64Extra(info.usize, info.csize, 0)
 		}
+		lextra = append(lextra, info.aesExtra...)
 		hdr := make([]byte, 30)
-		binary.LittleEndian.PutUint16(hdr[4:], 20)
+		verNeed := uint16(20)
+		if info.method == methodWinZipAES {
+			verNeed = 51 // WinZip AES declares version 5.1
+		}
+		binary.LittleEndian.PutUint16(hdr[4:], verNeed)
 		binary.LittleEndian.PutUint16(hdr[6:], info.flags)
 		binary.LittleEndian.PutUint16(hdr[8:], info.method)
 		binary.LittleEndian.PutUint16(hdr[10:], info.dtime)
@@ -622,6 +713,7 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 		if info.usize > max32 || info.csize > max32 || offsets[i] > max32 {
 			oextra = zip64Extra(info.usize, info.csize, offsets[i])
 		}
+		oextra = append(oextra, info.aesExtra...)
 		sz32 := func(v uint64) uint32 {
 			if v > max32 {
 				return uint32(max32)
@@ -630,7 +722,11 @@ func Build(mems []member.Member, comment, password string) ([]byte, error) {
 		}
 		hdr := make([]byte, 46)
 		le.PutUint16(hdr[4:], info.verMade)
-		le.PutUint16(hdr[6:], 20)
+		cdVerNeed := uint16(20)
+		if info.method == methodWinZipAES {
+			cdVerNeed = 51
+		}
+		le.PutUint16(hdr[6:], cdVerNeed)
 		le.PutUint16(hdr[8:], info.flags)
 		le.PutUint16(hdr[10:], info.method)
 		le.PutUint16(hdr[12:], info.dtime)
@@ -737,7 +833,7 @@ func toDOS(t time.Time) (uint16, uint16) {
 	}
 	y := t.Year()
 	if y < 1980 {
-		return 0, 1 << 5 // 1980-01-01 00:00:00
+		return 0, 1<<5 | 1 // 1980-01-01 00:00:00 (day 1, not 0)
 	}
 	if y > 2107 {
 		return (23 << 11) | (59 << 5) | 29, (12 << 5) | 31 | ((2107 - 1980) << 9)

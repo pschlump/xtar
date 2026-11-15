@@ -30,6 +30,7 @@ func Sevenz(name string, argv []string) int {
 	var includes, excludes []*pat.Pattern
 	var recurse, assumeYes bool
 	level := -1
+	aesLevel := 0
 	method := -1
 
 	for i := 0; i < len(argv); i++ {
@@ -73,7 +74,20 @@ func Sevenz(name string, argv []string) int {
 				typeName = body[1:]
 			}
 		case 'm':
-			// -mx9 / -mx=9 / -m0=...: only the level is honored
+			// -mx9 / -mx=9 / -m0=...: the level is honored, and
+			// -mem=aes[128|192|256] selects WinZip AES for zip output
+			if v := strings.TrimPrefix(body, "em=aes"); v != body {
+				switch v {
+				case "128":
+					aesLevel = 1
+				case "192":
+					aesLevel = 2
+				case "256":
+					aesLevel = 3
+				default:
+					return e.fatal("-mem=aes: want 128, 192, or 256")
+				}
+			}
 			v := strings.TrimPrefix(body, "mx")
 			v = strings.TrimPrefix(v, "=")
 			if len(v) >= 1 && v[0] >= '0' && v[0] <= '9' {
@@ -105,7 +119,7 @@ func Sevenz(name string, argv []string) int {
 
 	switch cmd {
 	case "a", "u":
-		return sevenzAdd(e, archive, files, typeName, password, level, method, recurse, includes, excludes, cmd == "u")
+		return sevenzAdd(e, archive, files, typeName, password, level, method, aesLevel, recurse, includes, excludes, cmd == "u")
 	case "x", "e":
 		return sevenzExtract(e, archive, files, password, outDir, cmd == "e", includes, excludes)
 	case "l":
@@ -152,7 +166,7 @@ func Sevenz(name string, argv []string) int {
 }
 
 // sevenzAdd creates or extends an archive; 7z recurses by default.
-func sevenzAdd(e *env, archive string, files []string, typeName, password string, level, method int, recurse bool, includes, excludes []*pat.Pattern, updateOnly bool) int {
+func sevenzAdd(e *env, archive string, files []string, typeName, password string, level, method, aesLevel int, recurse bool, includes, excludes []*pat.Pattern, updateOnly bool) int {
 	container := ""
 	codec := ""
 	switch typeName {
@@ -212,6 +226,7 @@ func sevenzAdd(e *env, archive string, files []string, typeName, password string
 		Bare:             codec != "",
 		ZipMethod:        method,
 		ZipPassword:      password,
+		ZipAES:           aesLevel,
 		Level:            level,
 		DefaultContainer: "zip",
 		Walk:             wopts,

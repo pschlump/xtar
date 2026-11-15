@@ -11,6 +11,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -390,5 +393,79 @@ func TestCDOffsetFallback(t *testing.T) {
 	}
 	if len(a.Notes) == 0 || !strings.Contains(a.Notes[0], "located by position") {
 		t.Fatalf("fallback note missing: %v", a.Notes)
+	}
+}
+
+// TestWinZipAES both directions: 7-Zip-written goldens decode, our
+// AES zips round-trip at every strength and reject wrong passwords,
+// and the system tool validates what we write.
+func TestWinZipAES(t *testing.T) {
+	bin := ""
+	for _, name := range []string{"7zz", "7z"} {
+		if p, err := exec.LookPath(name); err == nil {
+			bin = p
+			break
+		}
+	}
+	if bin != "" {
+		for _, f := range []string{"/tmp/zspec/aes256.zip", "/tmp/zspec/aes128.zip"} {
+			b, err := os.ReadFile(f)
+			if err != nil {
+				t.Skip("goldens missing")
+			}
+			a, err := Parse(b, "zpw29")
+			if err != nil || string(a.Members[0].Data) != "aes zip secret content\n" {
+				t.Errorf("%s: read: %v", f, err)
+			}
+			if _, err := Parse(b, "wrong"); err == nil {
+				t.Errorf("%s: wrong password accepted", f)
+			}
+			if _, err := Parse(b, ""); err == nil {
+				t.Errorf("%s: missing password accepted", f)
+			}
+		}
+	}
+
+	mkMems := func() []member.Member {
+		return []member.Member{
+			{Name: "d/", Kind: member.Directory, Mode: 0o755},
+			{Name: "d/s.txt", Encrypted: true, Mode: 0o644, Data: []byte("aes zip secret content\n")},
+			{Name: "d/plain.txt", Mode: 0o644, Data: []byte("in the clear\n")},
+		}
+	}
+	for _, strength := range []int{1, 2, 3} {
+		mems := mkMems()
+		blob, err := BuildAES(mems, "", "zpw29", strength)
+		if err != nil {
+			t.Fatalf("strength %d: %v", strength, err)
+		}
+		a, err := Parse(blob, "zpw29")
+		if err != nil {
+			t.Errorf("strength %d: round trip: %v", strength, err)
+			continue
+		}
+		if len(a.Members) != 3 || string(a.Members[1].Data) != "aes zip secret content\n" {
+			t.Errorf("strength %d: members wrong", strength)
+		}
+		if _, err := Parse(blob, "nope"); err == nil {
+			t.Errorf("strength %d: wrong password accepted", strength)
+		}
+		if bin == "" {
+			continue
+		}
+		tmp := t.TempDir()
+		p := filepath.Join(tmp, "t.zip")
+		if err := os.WriteFile(p, blob, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(bin, "t", "-pzpw29", p).CombinedOutput(); err != nil {
+			t.Errorf("strength %d: system 7z rejected: %v: %s", strength, err, out)
+		}
+		xdir := t.TempDir()
+		if out, err := exec.Command(bin, "x", "-y", "-pzpw29", "-o"+xdir, p).CombinedOutput(); err != nil {
+			t.Errorf("strength %d: system 7z extract failed: %v: %s", strength, err, out)
+		} else if got, _ := os.ReadFile(filepath.Join(xdir, "d", "s.txt")); string(got) != "aes zip secret content\n" {
+			t.Errorf("strength %d: system extract content wrong: %q", strength, got)
+		}
 	}
 }
