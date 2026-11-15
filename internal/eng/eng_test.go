@@ -150,12 +150,13 @@ func TestCreateTarXz(t *testing.T) {
 func TestCreateUnsupportedExtension(t *testing.T) {
 	tree(t)
 	_, err := Create(&CreateOpts{
-		Path:             filepath.Join(t.TempDir(), "a.tar.7z"),
+		Path:             filepath.Join(t.TempDir(), "a.rar"),
+		Container:        "rar",
 		DefaultContainer: "tar",
 		Walk:             walkFiles([]string{"proj"}),
 	})
-	if err == nil || !strings.Contains(err.Error(), "7z") {
-		t.Fatalf("want 7z unsupported error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "rar") {
+		t.Fatalf("want unknown-container error, got %v", err)
 	}
 }
 
@@ -402,8 +403,64 @@ func TestOpen7z(t *testing.T) {
 	if _, err := SniffFile(out); err != nil {
 		t.Fatalf("sniff: %v", err)
 	}
-	// updates refuse, clearly
-	if _, err := Update(&UpdateOpts{Path: out}); err == nil {
-		t.Fatal("native 7z update should refuse")
+	// updates go through the rebuild path now
+	if _, err := Update(&UpdateOpts{Path: out, Level: 6}); err != nil {
+		t.Fatalf("native 7z update: %v", err)
+	}
+}
+
+// TestCreate7z writes a native .7z through Create and Update, with
+// the 7-Zip CLI as the validator when present.
+func TestCreate7z(t *testing.T) {
+	tree(t)
+	out := filepath.Join(t.TempDir(), "a.7z")
+	a, err := Create(&CreateOpts{
+		Path:             out,
+		Container:        "7z",
+		Level:            6,
+		DefaultContainer: "tar",
+		Walk:             walkFiles([]string{"proj"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Format != "7z" || len(a.Layers) != 0 {
+		t.Fatalf("resolve: %s %v", a.Format, a.Layers)
+	}
+	b, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Members) != 6 {
+		t.Fatalf("members %d", len(b.Members))
+	}
+
+	// Append and delete through the rebuild path.
+	res, err := Update(&UpdateOpts{Path: out, Level: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = res
+	if _, err := Update(&UpdateOpts{Path: out, Level: 6, Delete: mustPat("*.log")}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range c.Members {
+		if strings.HasSuffix(m.Name, ".log") {
+			t.Fatal("skip.log survived delete")
+		}
+	}
+
+	// The system 7-Zip validates both shapes.
+	for _, bin := range []string{"7zz", "7z"} {
+		if p, err := exec.LookPath(bin); err == nil {
+			if out2, err := exec.Command(p, "t", out).CombinedOutput(); err != nil {
+				t.Fatalf("7z t ours: %v\n%s", err, out2)
+			}
+			break
+		}
 	}
 }

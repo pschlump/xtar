@@ -14,6 +14,7 @@ import (
 	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/pat"
+	"github.com/pschlump/xtar/internal/sevenzfmt"
 	"github.com/pschlump/xtar/internal/tarfmt"
 	"github.com/pschlump/xtar/internal/walk"
 	"github.com/pschlump/xtar/internal/zipfmt"
@@ -33,6 +34,7 @@ type UpdateOpts struct {
 	Walk      walk.Opts
 	Update    bool // -u: skip files not newer than the archived copy
 	Password  string
+	Level     int // compression level for rebuilds (7z); 0 stores, -1 defaults
 	ZipMethod int // zipfmt.Method*; -1 (unset) defaults to deflate
 	Warn      func(string)
 }
@@ -64,8 +66,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	if len(a.Layers) > 0 {
 		return nil, fmt.Errorf("%s: cannot update compressed archives", o.Path)
 	}
-	if a.Format != "tar" && a.Format != "cpio" && a.Format != "zip" {
-		return nil, fmt.Errorf("%s: only tar, cpio, and zip archives can be updated in place (this is %s)", o.Path, a.Format)
+	if a.Format != "tar" && a.Format != "cpio" && a.Format != "zip" && a.Format != "7z" {
+		return nil, fmt.Errorf("%s: only tar, cpio, zip, and 7z archives can be updated in place (this is %s)", o.Path, a.Format)
 	}
 
 	res := &UpdateResult{}
@@ -152,6 +154,8 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 		blob, err = tarfmt.Build(format, mems)
 	case "cpio":
 		blob, err = cpiofmt.Build(format, mems)
+	case "7z":
+		blob, err = sevenzfmt.Build(mems, o.Password, o.Level)
 	case "zip":
 		blob, err = zipfmt.Build(mems, a.Comment, "")
 	}

@@ -44,8 +44,19 @@ func TestSevenzNative(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dst, "proj/a.txt")); err != nil {
 		t.Fatal("a.txt missing after extract")
 	}
-	// delete on a native archive refuses
-	if code := Sevenz("7z", []string{"d", arc, "*a.txt"}); code == exitOK {
-		t.Fatal("delete on native 7z should refuse")
+	// delete and re-add round-trip through the rebuild path
+	if code := Sevenz("7z", []string{"d", arc, "*a.txt"}); code != exitOK {
+		t.Fatalf("d exit %d", code)
+	}
+	if code := Sevenz("7z", []string{"l", arc}); code != exitOK {
+		t.Fatalf("l after d exit %d", code)
+	}
+	// native creation validates with the system tool
+	native := filepath.Join(work, "written.7z")
+	if code := Sevenz("7z", []string{"a", "-t7z", native, "proj/a.txt"}); code != exitOK {
+		t.Fatalf("a -t7z exit %d", code)
+	}
+	if out, err := exec.Command(bin, "t", native).CombinedOutput(); err != nil {
+		t.Fatalf("system 7z t ours: %v: %s", err, out)
 	}
 }

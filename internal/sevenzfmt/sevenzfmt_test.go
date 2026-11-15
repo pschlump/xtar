@@ -11,6 +11,9 @@ import (
 	"encoding/hex"
 	"os"
 	"os/exec"
+	"time"
+
+	"github.com/pschlump/xtar/internal/member"
 	"path/filepath"
 	"testing"
 )
@@ -258,4 +261,106 @@ func TestMalformed(t *testing.T) {
 			t.Fatalf("prefix %d parsed", i)
 		}
 	}
+}
+
+// testMembers is the write-side corpus: a directory, a text file, a
+// binary, an empty file, and a symlink.
+func testMembers() []member.Member {
+	base := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	return []member.Member{
+		{Name: "dir", Kind: member.Directory, Mode: 0o755, ModTime: base},
+		{Name: "dir/a.txt", Kind: member.Regular, Mode: 0o644, ModTime: base, Data: []byte("hello write side\n")},
+		{Name: "dir/b.bin", Kind: member.Regular, Mode: 0o600, ModTime: base, Data: bytes.Repeat([]byte("xyzzy "), 3000)},
+		{Name: "dir/empty", Kind: member.Regular, Mode: 0o644, ModTime: base},
+		{Name: "link", Kind: member.SymLink, Mode: 0o777, ModTime: base, LinkName: "dir/a.txt"},
+	}
+}
+
+
+// TestBuildRoundTrip builds archives in every shape — LZMA, stored,
+// AES — and requires our own parser, the 7-Zip CLI, and bsdtar
+// (libarchive) to read them back byte-exact.
+func TestBuildRoundTrip(t *testing.T) {
+	bin := z7bin(t)
+	for _, tc := range []struct {
+		name string
+		pw   string
+		lvl  int
+	}{
+		{"lzma", "", 6},
+		{"copy", "", 0},
+		{"aes", "secret-pw", 6},
+	} {
+		blob, err := Build(testMembers(), tc.pw, tc.lvl)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		a, err := Parse(blob, tc.pw)
+		if err != nil {
+			t.Errorf("%s: own parse: %v", tc.name, err)
+			continue
+		}
+		if len(a.Members) != 5 {
+			t.Errorf("%s: %d members", tc.name, len(a.Members))
+			continue
+		}
+		if a.Members[1].Name != "dir/a.txt" || string(a.Members[1].Data) != "hello write side\n" {
+			t.Errorf("%s: a.txt wrong: %+v", tc.name, a.Members[1])
+		}
+		if a.Members[2].Kind != member.Regular || len(a.Members[2].Data) != 18000 {
+			t.Errorf("%s: b.bin wrong", tc.name)
+		}
+		if a.Members[3].Kind != member.Regular || len(a.Members[3].Data) != 0 {
+			t.Errorf("%s: empty wrong", tc.name)
+		}
+		if a.Members[4].Kind != member.SymLink || a.Members[4].LinkName != "dir/a.txt" {
+			t.Errorf("%s: link wrong: kind=%d link=%q", tc.name, a.Members[4].Kind, a.Members[4].LinkName)
+		}
+
+		if bin == "" {
+			continue
+		}
+		tmp := t.TempDir()
+		arc := filepath.Join(tmp, "t.7z")
+		if err := os.WriteFile(arc, blob, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		args := []string{"t"}
+		if tc.pw != "" {
+			args = append(args, "-p"+tc.pw)
+		}
+		if out, err := exec.Command(bin, append(args, arc)...).CombinedOutput(); err != nil {
+			t.Errorf("%s: 7zz t rejected: %v: %s", tc.name, err, out)
+		}
+		if tc.pw == "" {
+			// libarchive is a second reader (no AES)
+			if out, err := exec.Command("/usr/bin/bsdtar", "-tf", arc).CombinedOutput(); err != nil {
+				t.Errorf("%s: bsdtar rejected: %v: %s", tc.name, err, out)
+			}
+		}
+		xargs := []string{"x", "-y"}
+		if tc.pw != "" {
+			xargs = append(xargs, "-p"+tc.pw)
+		}
+		outDir := t.TempDir()
+		xargs = append(xargs, "-o"+outDir, arc)
+		if out, err := exec.Command(bin, xargs...).CombinedOutput(); err != nil {
+			t.Errorf("%s: 7zz x failed: %v: %s", tc.name, err, out)
+			continue
+		}
+		got, err := os.ReadFile(filepath.Join(outDir, "dir", "a.txt"))
+		if err != nil || string(got) != "hello write side\n" {
+			t.Errorf("%s: 7zz x content wrong: %q %v", tc.name, got, err)
+		}
+	}
+}
+
+func z7bin(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"7zz", "7z"} {
+		if bin, err := exec.LookPath(name); err == nil {
+			return bin
+		}
+	}
+	return ""
 }

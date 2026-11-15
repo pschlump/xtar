@@ -163,13 +163,19 @@ func sevenzAdd(e *env, archive string, files []string, typeName, password string
 		container = "tar"
 	case "cpio":
 		container = "cpio"
+	case "7z":
+		container = "7z"
 	case "gzip", "bzip2", "lz4", "compress":
 		codec = typeName
 	default:
 		return e.fatal("-t%s: unsupported archive type", typeName)
 	}
 	if method < 0 {
-		method = int(zipfmt.MethodDeflate)
+		if container == "7z" {
+			method = 0 // 7z compresses by level, not zip method
+		} else {
+			method = int(zipfmt.MethodDeflate)
+		}
 	}
 
 	wopts := walk.Opts{

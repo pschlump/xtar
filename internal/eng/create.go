@@ -15,6 +15,7 @@ import (
 	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
 	"github.com/pschlump/xtar/internal/member"
+	"github.com/pschlump/xtar/internal/sevenzfmt"
 	"github.com/pschlump/xtar/internal/tarfmt"
 	"github.com/pschlump/xtar/internal/walk"
 	"github.com/pschlump/xtar/internal/zipfmt"
@@ -88,6 +89,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 			return nil, err
 		}
 	case "zip", "":
+	case "7z":
 	default:
 		return nil, fmt.Errorf("unknown container format %q", container)
 	}
@@ -106,6 +108,13 @@ func Create(o *CreateOpts) (*Archive, error) {
 	case "cpio":
 		a.Format = "cpio"
 		a.Variant = cpioVariant
+	case "7z":
+		blob, err := sevenzfmt.Build(mems, o.ZipPassword, o.Level)
+		if err != nil {
+			return nil, err
+		}
+		zipBlob = blob
+		a.Format = "7z"
 	case "zip":
 		method := o.ZipMethod
 		if method < 0 {
@@ -196,7 +205,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 			}
 			return nil, err
 		}
-	case "zip":
+	case "zip", "7z":
 		if _, err := sink.Write(zipBlob); err != nil {
 			if closeFile != nil {
 				_ = closeFile() // teardown on the way to an error return
