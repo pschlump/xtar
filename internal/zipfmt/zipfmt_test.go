@@ -9,7 +9,9 @@ package zipfmt
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/binary"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -299,5 +301,94 @@ func TestEmptyArchive(t *testing.T) {
 	}
 	if len(a.Members) != 0 {
 		t.Fatalf("members %d", len(a.Members))
+	}
+}
+
+// relabelAsSplit rewrites a built archive the way a split writer
+// states its offsets: every central-directory entry's local offset and
+// the EOCD's directory offset become relative to a part of size S.
+// The members' bytes stay where they are, exactly like a concatenated
+// split set.
+func relabelAsSplit(t *testing.T, blob []byte, S int64) []byte {
+	t.Helper()
+	eocd := findEOCD(blob)
+	if eocd < 0 {
+		t.Fatal("no EOCD")
+	}
+	cdSize := int64(binary.LittleEndian.Uint32(blob[eocd+12:]))
+	le := binary.LittleEndian
+	le.PutUint32(blob[eocd+16:], uint32(int64(le.Uint32(blob[eocd+16:]))%S))
+	pos := int64(eocd) - cdSize
+	for bytes.Equal(blob[pos:pos+4], sigCD) {
+		le.PutUint32(blob[pos+42:], uint32(int64(le.Uint32(blob[pos+42:]))%S))
+		pos += 46 + int64(le.Uint16(blob[pos+28:])) + int64(le.Uint16(blob[pos+30:])) + int64(le.Uint16(blob[pos+32:]))
+	}
+	return blob
+}
+
+// TestSplitOffsetsRecovered: a split set's offsets are stated per
+// part, so on the joined bytes almost none of them point at local
+// headers.  The recovery scan rebuilds them in directory order, each
+// candidate verified by name, and the archive decodes intact.
+func TestSplitOffsetsRecovered(t *testing.T) {
+	mems := sampleMembers()
+	blob, err := Build(mems, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Sanity: the pristine archive parses without any recovery note.
+	ref, err := Parse(append([]byte(nil), blob...), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ref.Notes) != 0 {
+		t.Fatalf("pristine archive produced notes: %v", ref.Notes)
+	}
+
+	a, err := Parse(relabelAsSplit(t, append([]byte(nil), blob...), 64), "")
+	if err != nil {
+		t.Fatalf("split-joined parse: %v", err)
+	}
+	if len(a.Members) != len(ref.Members) {
+		t.Fatalf("members %d, want %d", len(a.Members), len(ref.Members))
+	}
+	var rebuilt bool
+	for _, n := range a.Notes {
+		if strings.Contains(n, "rebuilt 4 of 4 local header offsets") {
+			rebuilt = true
+		}
+	}
+	if !rebuilt {
+		t.Fatalf("recovery note missing: %v", a.Notes)
+	}
+	for i := range ref.Members {
+		if a.Members[i].Name != ref.Members[i].Name {
+			t.Fatalf("member %d: %q, want %q", i, a.Members[i].Name, ref.Members[i].Name)
+		}
+		if got := a.Members[i].Data; !bytes.Equal(got, ref.Members[i].Data) {
+			t.Fatalf("member %s content %q", ref.Members[i].Name, got)
+		}
+	}
+}
+
+// TestCDOffsetFallback: when the EOCD's directory offset points beyond
+// the archive, the directory is located by position — it physically
+// abuts the EOCD.
+func TestCDOffsetFallback(t *testing.T) {
+	blob, err := Build(sampleMembers(), "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eocd := findEOCD(blob)
+	binary.LittleEndian.PutUint32(blob[eocd+16:], 0x70000000)
+	a, err := Parse(blob, "")
+	if err != nil {
+		t.Fatalf("fallback parse: %v", err)
+	}
+	if len(a.Members) != 4 {
+		t.Fatalf("members %d", len(a.Members))
+	}
+	if len(a.Notes) == 0 || !strings.Contains(a.Notes[0], "located by position") {
+		t.Fatalf("fallback note missing: %v", a.Notes)
 	}
 }

@@ -285,6 +285,9 @@ Compatible with Info-ZIP unzip.
   `-n` never overwrite, `-u`/`-f` update/freshen, `-j` junk paths, `-q`,
   `-P PASS` password, `-Z` (or the `zipinfo` name) zipinfo-style listing.
 * Works on any container xtar reads — `unzip -l foo.tar.bz2` lists it.
+* Split archives read natively: opening any part of `name.z01`…`name.zNN` +
+  `name.zip` assembles the whole set (unzip(1) needs `zip -s-` to merge
+  first, and its best-effort read of the joined bytes drops members).
 * Interactive overwrite prompts behave like unzip (`[y]es, [n]o, [A]ll, [N]one,
   [r]ename`); `-o`/`-n`/`-q` suppress them, as do non-tty stdin closes.
 
@@ -442,9 +445,11 @@ policy with dialect-native spellings.
   so zero-filled-but-allocated files (APFS allocates truncate holes)
   still store sparsely.
 * **Concatenation.** Multi-member gzip and concatenated lz4 frames are read.
-  Spanned zip is *sniffed* (the `PK\x07\x08` markers) but split assembly is
-  not implemented — it errors clearly until M5; split-zip *writing*
-  (`zip -s`) is likewise deferred.
+  Split zip sets (`name.z01`… beside the final `name.zip`) are assembled and
+  read in full, opened through any member of the set: the offsets split
+  writers state per part are rebuilt by a signature scan matched to the
+  central directory (unzip(1) itself cannot read a set without merging it
+  first, `zip -s-`). Split-zip *writing* (`zip -s`) remains deferred.
 * **Encryption.** zip traditional PKWARE encryption is read and written
   (passwords via `-P`/`-p`/prompt; shipped in M3); AES-encrypted zips and
   7z AES arrive with the 7z crypto work (M5–M6);
@@ -482,7 +487,7 @@ variants (different wire formats) and are **not** used for any archive format
 | needed for        | missing codec      |
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
-| `.lzma`, zip-LZMA, 7z (LZMA/LZMA2) | lzma-alone (pluto) |
+| zip-LZMA (method 14), 7z (LZMA/LZMA2) | decoder shipped in pluto (`lzma`); container wiring pending |
 | `.tar.zst`, zip-zstd | zstd (pluto)     |
 | 7z container      | 7z parsing + LZMA + BCJ filters + AES |
 | PPMd (7z, zip method 98) | PPMd (pluto)  |
@@ -613,7 +618,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M2** | bzip2 + compress(.Z) + lz4 layers; cpio dialect (odc/newc/crc read+write, binary read); `TAPE` env; append/delete on uncompressed tar | ✅ shipped — 66a3ebd (the codec layers and `TAPE` landed early, with M1) |
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
 | **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 8ba8ccf |
-| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | |
+| **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | 🚧 in progress — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read SPLITZIP |
 | **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
 
 M3 landed ahead of the plan in three places and short in one: zip64 is

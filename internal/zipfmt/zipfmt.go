@@ -118,10 +118,20 @@ func Parse(b []byte, password string) (*Archive, error) {
 	// where the directory really sits.
 	a.Shift = cdEnd - cdSize - cdOffset
 	if a.Shift < 0 {
-		return nil, fmt.Errorf("zip: central directory offset %d is beyond the archive", cdOffset)
+		// Some writers state a directory offset that is not absolute for
+		// the bytes at hand (a split set's is relative to its last part).
+		// The directory physically abuts the EOCD, so fall back to that.
+		if alt := cdEnd - cdSize; alt >= 0 && alt+4 <= int64(len(b)) && bytes.Equal(b[alt:alt+4], sigCD) {
+			a.Shift, cdOffset = 0, alt
+			a.Notes = append(a.Notes, "central directory located by position: the stated offset did not match")
+		} else {
+			return nil, fmt.Errorf("zip: central directory offset %d is beyond the archive", cdOffset)
+		}
 	}
-	pos := cdOffset + a.Shift
+	cdStart := cdOffset + a.Shift
 
+	var ents []*cdEntry
+	pos := cdStart
 	for i := 0; i < nEntries; i++ {
 		if pos+46 > int64(len(b)) || !bytes.Equal(b[pos:pos+4], sigCD) {
 			return nil, fmt.Errorf("zip: bad central directory record at offset %d", pos)
@@ -131,6 +141,13 @@ func Parse(b []byte, password string) (*Archive, error) {
 			return nil, fmt.Errorf("zip: truncated central directory entry at offset %d", pos)
 		}
 		pos = e.next
+		ents = append(ents, e)
+	}
+	if fixed := fixLocalOffsets(b, ents, a.Shift, cdStart); fixed > 0 {
+		a.Notes = append(a.Notes, fmt.Sprintf(
+			"split or damaged archive: rebuilt %d of %d local header offsets by scanning", fixed, len(ents)))
+	}
+	for _, e := range ents {
 		m, err := readMember(b, e, password, a.Shift)
 		if err != nil {
 			return nil, err
@@ -138,6 +155,73 @@ func Parse(b []byte, password string) (*Archive, error) {
 		a.Members = append(a.Members, *m)
 	}
 	return a, nil
+}
+
+// fixLocalOffsets repairs local header offsets that do not point at a
+// local header — the damage a concatenated split set carries, since
+// split writers state each offset relative to its own part.  The
+// repair is the zip -FF heuristic: local headers sit in the stream in
+// the same order as their central-directory records, so the bytes
+// before the directory are scanned for signatures and matched to
+// records in order, each candidate verified against the record's
+// stored name.  Stated offsets that already carry a local header are
+// trusted.  It returns how many records were repaired.
+func fixLocalOffsets(b []byte, ents []*cdEntry, shift, cdStart int64) int {
+	broken := false
+	for _, e := range ents {
+		if !hasLocalSig(b, int64(e.offset)+shift) {
+			broken = true
+			break
+		}
+	}
+	if !broken {
+		return 0
+	}
+	fixed, cursor := 0, int64(0)
+	for _, e := range ents {
+		lh := int64(e.offset) + shift
+		if hasLocalSig(b, lh) {
+			cursor = lh + 1
+			continue
+		}
+		p, ok := scanLocalHeader(b, cursor, cdStart, e.rawName)
+		if !ok {
+			continue // leave it be; readMember reports the offset it has
+		}
+		e.lhAbs = p
+		cursor = p + 1
+		fixed++
+	}
+	return fixed
+}
+
+// hasLocalSig reports whether pos carries a local file header signature.
+func hasLocalSig(b []byte, pos int64) bool {
+	return pos >= 0 && pos+4 <= int64(len(b)) && bytes.Equal(b[pos:pos+4], sigLocal)
+}
+
+// scanLocalHeader finds the next local header at or after from and
+// before limit whose stored name is rawName.
+func scanLocalHeader(b []byte, from, limit int64, rawName []byte) (int64, bool) {
+	if limit > int64(len(b)) {
+		limit = int64(len(b))
+	}
+	p := max(from, 0)
+	for p+4 <= limit {
+		i := int64(bytes.Index(b[p:limit], sigLocal))
+		if i < 0 {
+			return 0, false
+		}
+		p += i
+		if p+30 <= int64(len(b)) {
+			nlen := int64(binary.LittleEndian.Uint16(b[p+26:]))
+			if p+30+nlen <= int64(len(b)) && bytes.Equal(b[p+30:p+30+nlen], rawName) {
+				return p, true
+			}
+		}
+		p += 4
+	}
+	return 0, false
 }
 
 func findEOCD(b []byte) int {
@@ -194,6 +278,7 @@ type cdEntry struct {
 	internalAttr                    uint16
 	externalAttr                    uint32
 	offset                          uint64
+	lhAbs                           int64 // absolute local header offset once repaired; -1 while stated
 	next                            int64 // offset of the following record
 }
 
@@ -224,6 +309,7 @@ func parseCDEntry(b []byte, pos int64) *cdEntry {
 	e.extra = b[pos+46+int64(nameLen) : pos+46+int64(nameLen+extraLen)]
 	e.comment = b[pos+46+int64(nameLen+extraLen) : pos+46+int64(nameLen+extraLen+commentLen)]
 	e.next = pos + 46 + int64(nameLen+extraLen+commentLen)
+	e.lhAbs = -1
 	resolveZip64(e)
 	return e
 }
@@ -269,7 +355,10 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 	}
 
 	lh := int64(e.offset) + shift
-	if lh+30 > int64(len(b)) || !bytes.Equal(b[lh:lh+4], sigLocal) {
+	if e.lhAbs >= 0 {
+		lh = e.lhAbs
+	}
+	if lh < 0 || lh+30 > int64(len(b)) || !bytes.Equal(b[lh:lh+4], sigLocal) {
 		return nil, fmt.Errorf("zip: member %s: bad local header at offset %d", e.name, lh)
 	}
 	le := binary.LittleEndian

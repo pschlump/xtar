@@ -254,10 +254,15 @@ var ErrNotArchive = errors.New("this does not look like a recognized archive for
 
 // OpenFile reads and opens the archive at path ("-" or "" means
 // stdin).  Tar and cpio containers stream; zip and bare content is
-// loaded whole.  The caller must Close the archive when done.
+// loaded whole.  A split zip set (name.z01… beside name.zip) is
+// assembled from its parts.  The caller must Close the archive when
+// done.
 func OpenFile(path, password string) (*Archive, error) {
 	if path == "" || path == "-" {
 		return OpenStdin(password)
+	}
+	if parts, ok := splitSet(path); ok {
+		return openSplitZip(path, parts, password)
 	}
 	f, err := os.Open(path)
 	if err != nil {
@@ -507,8 +512,22 @@ type SniffInfo struct {
 
 // SniffFile identifies an archive without extracting it.  It reads
 // the whole file (it reports sizes, so there is nothing to save by
-// streaming).
+// streaming); a split zip set is assembled from its parts first.
 func SniffFile(path string) (*SniffInfo, error) {
+	if parts, ok := splitSet(path); ok {
+		a, err := openSplitZip(path, parts, "")
+		if err != nil {
+			return nil, err
+		}
+		return &SniffInfo{
+			Layers:   a.Layers,
+			Format:   a.Format,
+			Variant:  a.Variant,
+			Members:  len(a.Members),
+			CompSize: a.CompSize,
+			RawSize:  int64(len(a.Raw)),
+		}, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
