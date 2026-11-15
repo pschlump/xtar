@@ -7,10 +7,15 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"github.com/pschlump/xtar/internal/eng"
+	"github.com/pschlump/xtar/internal/member"
+	"github.com/pschlump/xtar/internal/walk"
 	"strings"
 	"testing"
 )
@@ -100,4 +105,63 @@ func captureStdout(t *testing.T, run func() int) string {
 		t.Fatalf("exit %d", code)
 	}
 	return string(buf)
+}
+
+// TestStreamingMemoryBounded: a large compressed tar lists with a
+// resident set bounded by the largest member, not the archive (the M4
+// streaming design; this test pins it against regressions).
+func TestStreamingMemoryBounded(t *testing.T) {
+	if testing.Short() {
+		t.Skip("streams 64 MiB")
+	}
+	dir := t.TempDir()
+	big := filepath.Join(dir, "big.bin")
+	f, err := os.Create(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chunk := make([]byte, 1<<20)
+	s := uint32(9)
+	for i := range chunk[:4096] { // sparse-ish: mostly zeros with noise
+		s = s*1664525 + 1013904223
+		chunk[i] = byte(s >> 23)
+	}
+	for i := 0; i < 64; i++ {
+		if _, err := f.Write(chunk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f.Close()
+
+	out := filepath.Join(dir, "a.tgz")
+	if _, err := eng.Create(&eng.CreateOpts{
+		Path:             out,
+		DefaultContainer: "tar",
+		Walk:             walk.Opts{Files: []string{big}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := eng.OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a.Close()
+	total := 0
+	if err := a.Each(func(m *member.Member, data io.Reader) error {
+		n, err := io.Copy(io.Discard, data)
+		total += int(n)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if total != 64<<20 {
+		t.Fatalf("streamed %d bytes, want %d", total, 64<<20)
+	}
+	var rss, vs int64
+	if b, err := os.ReadFile("/proc/self/statm"); err == nil {
+		_, _ = fmt.Sscanf(string(b), "%d %d", &vs, &rss)
+		if rss*int64(os.Getpagesize()) > 200<<20 {
+			t.Fatalf("rss %d MiB exceeds the bound", rss*int64(os.Getpagesize())>>20)
+		}
+	}
 }
