@@ -7,6 +7,7 @@ BSD 3 Clause Licensed.
 package cli
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -268,5 +269,43 @@ func checkContent(t *testing.T, path string) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "alpha\n" {
 		t.Fatalf("%s: content %q %v", path, got, err)
+	}
+}
+
+// TestZipLZMAZstdCreate: the dialect writes -Z lzma and -Z zstd, and
+// the system 7zz verifies both archives.
+func TestZipLZMAZstdCreate(t *testing.T) {
+	bin := ""
+	for _, n := range []string{"7zz", "7z"} {
+		if p, err := exec.LookPath(n); err == nil {
+			bin = p
+			break
+		}
+	}
+	if bin == "" {
+		t.Skip("no system 7z")
+	}
+	src, work := cliTree(t)
+	t.Chdir(src)
+	big := filepath.Join(src, "proj", "big.txt")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("the quick brown fox. "), 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []string{"lzma", "zstd"} {
+		out := filepath.Join(work, "m-"+m+".zip")
+		if code := Zip("zip", []string{"-Z", m, "-r", out, "proj"}); code != exitOK {
+			t.Fatalf("-Z %s: exit %d", m, code)
+		}
+		if o, err := exec.Command(bin, "t", out).CombinedOutput(); err != nil {
+			t.Fatalf("-Z %s: system 7z rejected: %v\n%s", m, err, o)
+		}
+		dst := filepath.Join(work, "x-"+m)
+		if o, err := exec.Command(bin, "x", "-y", "-o"+dst, out).CombinedOutput(); err != nil {
+			t.Fatalf("-Z %s: system 7z extract: %v\n%s", m, err, o)
+		}
+		got, err := os.ReadFile(filepath.Join(dst, "proj", "big.txt"))
+		if err != nil || !bytes.Equal(got, bytes.Repeat([]byte("the quick brown fox. "), 500)) {
+			t.Fatalf("-Z %s: content mismatch", m)
+		}
 	}
 }

@@ -469,3 +469,74 @@ func TestWinZipAES(t *testing.T) {
 		}
 	}
 }
+
+// TestLZMAAndZstdMethods: the two newer member methods in both
+// directions — 7-Zip's LZMA golden decodes, ours round-trip and are
+// verified by the system 7zz (LZMA) and 7zz + libarchive (zstd: the
+// WinZip id 93 is the one other readers take; the zstd project's own
+// id 20 is read and normalized).
+func TestLZMAAndZstdMethods(t *testing.T) {
+	text := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 2000)
+	if golden, err := os.ReadFile("/tmp/zspec/lzma.zip"); err == nil {
+		a, err := Parse(golden, "")
+		if err != nil || !bytes.Equal(a.Members[0].Data, text) {
+			t.Errorf("7-Zip zip-LZMA golden: %v", err)
+		}
+	} else {
+		t.Log("golden missing (rebuild /tmp/zspec/lzma.zip with 7zz)")
+	}
+
+	for _, tc := range []struct {
+		name   string
+		method uint16
+	}{
+		{"lzma", MethodLZMA},
+		{"zstd", MethodZstd},
+	} {
+		mems := []member.Member{{Name: "d/big.txt", Mode: 0o644, Method: tc.method, Data: text}}
+		blob, err := Build(mems, "", "")
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		a, err := Parse(blob, "")
+		if err != nil || !bytes.Equal(a.Members[0].Data, text) {
+			t.Fatalf("%s: round trip: %v", tc.name, err)
+		}
+		var bin string
+		for _, n := range []string{"7zz", "7z"} {
+			if p, err := exec.LookPath(n); err == nil {
+				bin = p
+				break
+			}
+		}
+		if bin == "" {
+			t.Skip("no system 7z")
+		}
+		tmp := t.TempDir()
+		p := filepath.Join(tmp, "t.zip")
+		if err := os.WriteFile(p, blob, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if out, err := exec.Command(bin, "t", p).CombinedOutput(); err != nil {
+			t.Errorf("%s: system 7z rejected: %v: %s", tc.name, err, out)
+		}
+		xdir := t.TempDir()
+		if out, err := exec.Command(bin, "x", "-y", "-o"+xdir, p).CombinedOutput(); err != nil {
+			t.Errorf("%s: system 7z extract: %v: %s", tc.name, err, out)
+		} else if got, _ := os.ReadFile(filepath.Join(xdir, "d", "big.txt")); !bytes.Equal(got, text) {
+			t.Errorf("%s: system extract content wrong", tc.name)
+		}
+	}
+
+	// the zstd project's method 20 reads (normalized from the same payload)
+	mems := []member.Member{{Name: "z", Mode: 0o644, Method: MethodZstd, Data: text}}
+	blob, _ := Build(mems, "", "")
+	blob[8+8] = byte(methodZstdZip) // local header method field
+	blob[8+9] = 0
+	j := bytes.Index(blob, []byte("PK\x01\x02"))
+	blob[j+10] = byte(methodZstdZip)
+	blob[j+11] = 0
+	if a, err := Parse(blob, ""); err != nil || !bytes.Equal(a.Members[0].Data, text) {
+		t.Errorf("zstd method-20 form: %v", err)
+	}
+}

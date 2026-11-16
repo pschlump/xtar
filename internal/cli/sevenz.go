@@ -26,7 +26,7 @@ func Sevenz(name string, argv []string) int {
 	e := &env{name: name}
 
 	var positional []string
-	var outDir, password, typeName string
+	var outDir, password, typeName, methodName string
 	var includes, excludes []*pat.Pattern
 	var recurse, assumeYes bool
 	level := -1
@@ -74,8 +74,13 @@ func Sevenz(name string, argv []string) int {
 				typeName = body[1:]
 			}
 		case 'm':
-			// -mx9 / -mx=9 / -m0=...: the level is honored, and
-			// -mem=aes[128|192|256] selects WinZip AES for zip output
+			// -mx9 / -mx=9: the level; -mem=aes[128|192|256]: WinZip AES
+			// for zip output; -m0=NAME / -mm=NAME: the member method
+			if v := strings.TrimPrefix(body, "m0="); v != body {
+				methodName = v
+			} else if v := strings.TrimPrefix(body, "m="); v != body && !strings.HasPrefix(v, "aes") {
+				methodName = v
+			}
 			if v := strings.TrimPrefix(body, "em=aes"); v != body {
 				switch v {
 				case "128":
@@ -128,7 +133,7 @@ func Sevenz(name string, argv []string) int {
 
 	switch cmd {
 	case "a", "u":
-		return sevenzAdd(e, archive, files, typeName, password, level, method, aesLevel, recurse, includes, excludes, cmd == "u")
+		return sevenzAdd(e, archive, files, typeName, methodName, password, level, method, aesLevel, recurse, includes, excludes, cmd == "u")
 	case "x", "e":
 		return sevenzExtract(e, archive, files, password, outDir, cmd == "e", includes, excludes)
 	case "l":
@@ -175,7 +180,7 @@ func Sevenz(name string, argv []string) int {
 }
 
 // sevenzAdd creates or extends an archive; 7z recurses by default.
-func sevenzAdd(e *env, archive string, files []string, typeName, password string, level, method, aesLevel int, recurse bool, includes, excludes []*pat.Pattern, updateOnly bool) int {
+func sevenzAdd(e *env, archive string, files []string, typeName, methodName, password string, level, method, aesLevel int, recurse bool, includes, excludes []*pat.Pattern, updateOnly bool) int {
 	container := ""
 	codec := ""
 	switch typeName {
@@ -197,6 +202,19 @@ func sevenzAdd(e *env, archive string, files []string, typeName, password string
 		if container == "7z" {
 			method = 0 // 7z compresses by level, not zip method
 		} else {
+			method = int(zipfmt.MethodDeflate)
+		}
+	}
+	if container == "zip" {
+		// -m0=CODEC / -mm=CODEC select the zip member method
+		switch methodName {
+		case "lzma":
+			method = int(zipfmt.MethodLZMA)
+		case "zstd":
+			method = int(zipfmt.MethodZstd)
+		case "bzip2":
+			method = int(zipfmt.MethodBZip2)
+		case "deflate":
 			method = int(zipfmt.MethodDeflate)
 		}
 	}

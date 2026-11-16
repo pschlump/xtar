@@ -21,6 +21,8 @@ import (
 	"github.com/pschlump/pluto/bzip2"
 	"github.com/pschlump/pluto/crc"
 	"github.com/pschlump/pluto/deflate"
+	"github.com/pschlump/pluto/lzma"
+	"github.com/pschlump/pluto/zstd"
 	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/member"
 )
@@ -30,6 +32,11 @@ const (
 	MethodStore   uint16 = 0
 	MethodDeflate uint16 = 8
 	MethodBZip2   uint16 = 12
+	MethodLZMA    uint16 = 14 // the LZMA-alone coder under a 9-byte zip header
+	MethodZstd    uint16 = 93 // WinZip's zstd id — the one other readers take
+	// methodZstdZip is the zstd project's own zip id (20); its payload
+	// is identical, so it is read and normalized to the WinZip id.
+	methodZstdZip uint16 = 20
 )
 
 // Flag bits.
@@ -455,6 +462,23 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 			return nil, fmt.Errorf("zip: member %s: bad bzip2 stream", e.name)
 		}
 		data = out
+	case MethodLZMA:
+		// version(2) + property size(1) + a zero byte + 5 properties,
+		// then the raw LZMA stream; the known size terminates it.
+		if len(data) < 9 || data[2] != 5 {
+			return nil, fmt.Errorf("zip: member %s: bad LZMA header", e.name)
+		}
+		out := lzma.DecodeRaw(data[9:], data[4:9], int64(e.usize))
+		if out == nil {
+			return nil, fmt.Errorf("zip: member %s: bad LZMA stream", e.name)
+		}
+		data = out
+	case MethodZstd, methodZstdZip:
+		out := zstd.Expand(data)
+		if out == nil {
+			return nil, fmt.Errorf("zip: member %s: bad zstd stream", e.name)
+		}
+		data = out
 	default:
 		return nil, fmt.Errorf("zip: member %s uses compression method %d, which is not supported", e.name, e.method)
 	}
@@ -612,12 +636,24 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 				}
 			case MethodBZip2:
 				comp = bzip2.Compress(data)
+			case MethodLZMA:
+				z := lzma.Compress(data)
+				// the zip framing: version, property size, a zero byte,
+				// then the 5 coder properties; the stream follows and
+				// the known size terminates it
+				comp = append([]byte{0x1A, 0x06, 0x05, 0x00, 0x5D, 0x00, 0x00, 0x00, 0x00}, z[13:]...)
+				binary.LittleEndian.PutUint32(comp[5:], 1<<23) // 8 MiB dictionary
+			case MethodZstd:
+				comp = zstd.Compress(data)
 			default:
 				return nil, fmt.Errorf("zip: %s: method %d is not writable", m.Name, method)
 			}
 			flags := uint16(0)
 			if !isASCII(m.Name) {
 				flags |= flagEFS
+			}
+			if method == MethodLZMA {
+				flags |= 0x2 // the compression-option bit 7-Zip's zip writer sets
 			}
 			var aesX []byte
 			aesMethod := false
@@ -666,6 +702,9 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 				info.crc = 0
 				info.verMade = 3<<8 | 51 // AES entries are made by 5.1
 			}
+			if method == MethodLZMA || method == MethodZstd {
+				info.verMade = 3<<8 | 63 // the newer methods are made by 6.3
+			}
 		}
 		cds[i] = info
 
@@ -684,8 +723,11 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 		lextra = append(lextra, info.aesExtra...)
 		hdr := make([]byte, 30)
 		verNeed := uint16(20)
-		if info.method == methodWinZipAES {
+		switch info.method {
+		case methodWinZipAES:
 			verNeed = 51 // WinZip AES declares version 5.1
+		case MethodLZMA, MethodZstd:
+			verNeed = 63 // the newer member methods declare 6.3
 		}
 		binary.LittleEndian.PutUint16(hdr[4:], verNeed)
 		binary.LittleEndian.PutUint16(hdr[6:], info.flags)
@@ -723,8 +765,11 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 		hdr := make([]byte, 46)
 		le.PutUint16(hdr[4:], info.verMade)
 		cdVerNeed := uint16(20)
-		if info.method == methodWinZipAES {
+		switch info.method {
+		case methodWinZipAES:
 			cdVerNeed = 51
+		case MethodLZMA, MethodZstd:
+			cdVerNeed = 63
 		}
 		le.PutUint16(hdr[6:], cdVerNeed)
 		le.PutUint16(hdr[8:], info.flags)

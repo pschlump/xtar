@@ -229,6 +229,10 @@ they don't conflict).
   `-T/--files-from`, `--null`, `--transform`, `-w`, `-W/--verify`, `--totals`,
   `--numeric-owner`, `--owner/--group`, `--format=gnu|pax|ustar|v7`,
   `-S/--sparse`, compression flags `-z -j -J --lzma --zstd -Z -a`.
+  The zip dialect's `-Z` selects the member method: `store`, `deflate`,
+  `bzip2`, `lzma` (method 14), `zstd` (the WinZip id; the zstd project's
+  own id is read too); 7z's `-mm=lzma`/`-mm=zstd` map to the same methods
+  when writing zip.
 * Auto-detect on read; auto-compress and format-by-extension on write.
 * Default write format is GNU (`gnu`) to match GNU tar; `--format` overrides.
 * Append/update/delete work only on uncompressed tar — a compressed or
@@ -495,8 +499,6 @@ variants (different wire formats) and are **not** used for any archive format
 | needed for        | missing codec      |
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
-| zip-LZMA (method 14) | decoder shipped in pluto (`lzma`); container wiring pending |
-| zip-zstd (method 20) | decoder shipped in pluto (`zstd`); container wiring pending |
 | PPMd (7z, zip method 98) | PPMd (pluto) |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.

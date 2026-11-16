@@ -125,8 +125,12 @@ func Zip(name string, argv []string) int {
 				method = int(zipfmt.MethodDeflate)
 			case "bzip2":
 				method = int(zipfmt.MethodBZip2)
+			case "lzma":
+				method = int(zipfmt.MethodLZMA)
+			case "zstd":
+				method = int(zipfmt.MethodZstd)
 			default:
-				return e.fatal("unknown compression method %q (want store, deflate, or bzip2)", t.value)
+				return e.fatal("unknown compression method %q (want store, deflate, bzip2, lzma, or zstd)", t.value)
 			}
 		case o.short == '0':
 			method = int(zipfmt.MethodStore)
