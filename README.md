@@ -305,11 +305,12 @@ Compatible with p7zip's command/switch shape.
 * `e` vs `x` applies to every container: `7z e foo.tar.gz` flattens, matching
   p7zip's `e` semantics; compound archives extract in one step
   (7-Zip ≥ 15.06 behavior).
-* Native `.7z` archives read: every method the 7-Zip CLI writes by
-  default plus LZMA, LZMA2, delta, deflate, bzip2, copy, BCJ (x86),
-  and AES256 (content or `-mhe=on` header encryption — a `-p` password
-  or the prompt decrypts). 7z *creation* still routes through
-  tar/cpio/zip; native write is M6. `d`/`u` on a native `.7z` refuse.
+* Native `.7z` archives read *and write*: reading covers every method
+  the 7-Zip CLI writes plus LZMA, LZMA2, delta, deflate, bzip2, copy,
+  BCJ (x86), and AES256 (content or `-mhe=on` header encryption); `a
+  -t7z` writes solid LZMA folders (stored at `-mx0`, AES256 with a
+  password), `u`/`d` rebuild in place, and the system 7zz plus
+  libarchive validate both directions.
 * `-t` maps to the global `--format=`; an unknown `-t` value is an error.
 
 ### xtar dialect
@@ -456,8 +457,10 @@ policy with dialect-native spellings.
   central directory (unzip(1) itself cannot read a set without merging it
   first, `zip -s-`). Split-zip *writing* (`zip -s`) remains deferred.
 * **Encryption.** zip traditional PKWARE encryption is read and written
-  (passwords via `-P`/`-p`/prompt; shipped in M3); AES-encrypted zips and
-  7z AES arrive with the 7z crypto work (M5–M6);
+  (passwords via `-P`/`-p`/prompt; shipped in M3); WinZip AES zips
+  (AE-2, 128/192/256 — read everywhere, written via the 7z dialect's
+  `-mem=aes128|192|256`) and 7z AES256 (read and write, `-mhe=on`
+  header encryption read) shipped with the M5/M6 crypto work;
   tar/cpio have no encryption and never will (dialect errors if asked).
   Password prompts hide input — terminal echo is off while the secret
   is read (a plain read when stdin is not a terminal, so piped
@@ -494,7 +497,7 @@ variants (different wire formats) and are **not** used for any archive format
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
 | zip-LZMA (method 14) | decoder shipped in pluto (`lzma`); container wiring pending |
 | zip-zstd (method 20) | decoder shipped in pluto (`zstd`); container wiring pending |
-| PPMd (7z, zip method 98) | PPMd (pluto); 7z *write* is M6 |
+| PPMd (7z, zip method 98) | PPMd (pluto) |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
 `xtar: lzma/zstd compression not yet supported — see README "What is deliberately
@@ -623,7 +626,7 @@ the empty-zip case, and extension/magic conflicts.
 | **M3** | zip container read+write (deflate/store, zip64, splits read; traditional encryption read+write); zip + unzip dialects; zipinfo mode | ✅ shipped — 63428a3 (notes below) |
 | **M4** | pluto streaming refactor (`io.Reader/Writer` codec APIs) → stdin streaming and large archives; PAX write; sparse tar; `--encoding`; terminal raw-mode so prompts stop echoing | ✅ shipped — pluto 370df4b + streaming create 44756aa + streaming read 23c43ab + PAX write/sparse/`--encoding` 78dc36d + hidden password entry 8ba8ccf |
 | **M5** | xz/lzma + zstd codecs in pluto; 7z container **read** (LZMA/LZMA2, BCJ, AES); spanned/split zip assembly | ✅ shipped — xz pluto 68cf37b + xtar b6c865b · lzma pluto 1d7fccd + xtar 64a0d98 · split-zip read e91c7fe · zstd pluto ce64622+2438aee + xtar 23d40c6 · 7z read c50844f |
-| **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | |
+| **M6** | 7z write; zip AES; benchmark/hash verbs; performance pass | ✅ shipped — 7z write 4d27c8d · zip AES 426dc21 · b/h verbs f28e8f9 · perf pass b192a19 |
 
 M3 landed ahead of the plan in three places and short in one: zip64 is
 *written* as well as read (the plan only promised read); the `7z` dialect
