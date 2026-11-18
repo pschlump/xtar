@@ -1,7 +1,7 @@
 /*
 Copyright (C) Philip Schlump, 2012-2026.
 
-BSD 3 Clause Licensed.
+MIT Licensed.
 */
 
 // Package tarfmt reads and writes the tar container: pre-POSIX v7,

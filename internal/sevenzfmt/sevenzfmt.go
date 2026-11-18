@@ -1,7 +1,7 @@
 /*
 Copyright (C) Philip Schlump, 2012-2026.
 
-BSD 3 Clause Licensed.
+MIT Licensed.
 */
 
 // Package sevenzfmt reads the 7z container: the signature header,

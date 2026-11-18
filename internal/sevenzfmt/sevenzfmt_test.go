@@ -1,7 +1,7 @@
 /*
 Copyright (C) Philip Schlump, 2012-2026.
 
-BSD 3 Clause Licensed.
+MIT Licensed.
 */
 
 package sevenzfmt
@@ -275,7 +275,6 @@ func testMembers() []member.Member {
 		{Name: "link", Kind: member.SymLink, Mode: 0o777, ModTime: base, LinkName: "dir/a.txt"},
 	}
 }
-
 
 // TestBuildRoundTrip builds archives in every shape — LZMA, stored,
 // AES — and requires our own parser, the 7-Zip CLI, and bsdtar

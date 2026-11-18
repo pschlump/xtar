@@ -24,26 +24,7 @@ overridden by flags.
 All codecs come from the sibling pure-Go library [`pluto`](../pluto) — zero
 external dependencies, stdlib only.
 
----
 
-## Table of contents
-
-1. [Why](#why)
-2. [The multi-call binary](#the-multi-call-binary)
-3. [The two axes: container vs. compression](#the-two-axes-container-vs-compression)
-4. [Format detection: sniffing rules](#format-detection-sniffing-rules)
-5. [The dialects](#the-dialects) — [tar](#tar-dialect) · [cpio](#cpio-dialect) · [zip](#zip-dialect) · [unzip](#unzip-dialect) · [7z](#7z-dialect) · [xtar](#xtar-dialect)
-6. [Cross-tool behavior matrices](#cross-tool-behavior-matrices)
-7. [Flag collisions across the real tools](#flag-collisions-across-the-real-tools)
-8. [Unified semantics](#unified-semantics)
-9. [Codec mapping to pluto](#codec-mapping-to-pluto)
-10. [What is deliberately not supported (yet)](#what-is-deliberately-not-supported-yet)
-11. [Exit codes](#exit-codes)
-12. [Examples](#examples)
-13. [Build and test](#build-and-test)
-14. [Roadmap](#roadmap)
-
----
 
 ## Why
 
@@ -72,6 +53,222 @@ behaviors under every name:
 
 xtar is that convergence done uniformly: **every** name gets **every** format,
 with each name's native flags still parsing the way its users' scripts expect.
+
+### The annoyance that started it
+
+It is a nuisance to hunt down the correct command — and often a whole
+toolchain to install — every time a file arrives in a format your
+machine does not have: the `.7z` that needs `p7zip`, the `.zst` that
+needs a new-enough `zstd`, the `.tar.lzma` that needs `xz-utils`, the
+`.cpio.Z` that needs `ncompress`, the split `.z01…zip` set that needs
+`zip -s-` to merge first, the AES zip that needs something newer than
+Info-ZIP.  Each one is a detour through a package manager before a
+single byte is extracted.
+
+xtar ends the detour: **one binary, no external dependencies, covers
+every format above** — reads them all from any of its command names,
+writes them all, decrypts zip (traditional and WinZip AES) and 7z
+(AES-256) given the password.  If the format is listed in the
+sniffing table below, some spelling of `tar`, `cpio`, `unzip`, or
+`7z` already opens it.
+
+---
+
+## Table of contents
+
+1. [Why](#why)
+2. [Usage guide by command](#usage-guide-by-command) — the examples, every format with every command
+3. [The multi-call binary](#the-multi-call-binary)
+4. [The two axes: container vs. compression](#the-two-axes-container-vs-compression)
+5. [Format detection: sniffing rules](#format-detection-sniffing-rules)
+6. [The dialects](#the-dialects) — [tar](#tar-dialect) · [cpio](#cpio-dialect) · [zip](#zip-dialect) · [unzip](#unzip-dialect) · [7z](#7z-dialect) · [xtar](#xtar-dialect)
+7. [Cross-tool behavior matrices](#cross-tool-behavior-matrices)
+8. [Flag collisions across the real tools](#flag-collisions-across-the-real-tools)
+9. [Unified semantics](#unified-semantics)
+10. [Codec mapping to pluto](#codec-mapping-to-pluto)
+11. [What is deliberately not supported (yet)](#what-is-deliberately-not-supported-yet)
+12. [Exit codes](#exit-codes)
+13. [Build and test](#build-and-test)
+14. [Roadmap](#roadmap)
+
+---
+
+## Usage guide by command
+
+Every example below was run against this binary.  The one rule to
+remember: **the command name controls syntax; the file's content
+controls the format** — so any command opens any supported archive,
+and the output filename's extension picks what `c`/`a` writes.
+
+The formats on the table: `tar`, `cpio` (newc/crc/odc/binary), `zip`
+(deflate/store/bzip2/LZMA/zstd members, zip64, split sets, AES),
+native `7z` (LZMA/LZMA2/delta/deflate/bzip2/copy/BCJ/AES), and bare
+compressed streams — gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd —
+wrapping any container, in any combination.
+
+### tar / gtar — extract, list, test, create, update
+
+```sh
+# Reading: format comes from the bytes, not the name
+tar -xf archive.zip                  # a zip
+tar -xf archive.cpio.gz              # gzip-wrapped cpio — no -z needed
+tar -xf archive.tar.xz               # xz
+tar -xf archive.tar.zst              # zstd
+tar -xf archive.tar.lzma             # lzma-alone
+tar -xf archive.7z                   # native 7z
+tar -xf archive.z01                  # a split set (z01…zNN + .zip)
+tar -tf archive.tar.bz2              # list instead of extracting
+tar -tvf archive.zip                 # verbose listing, permissions shown
+tar -xf actually-a-tar.tgz           # extension lies; magic wins (a note prints)
+
+# Creating: the output name picks container and compression together
+tar -cf out.tar dir/
+tar -cf out.zip dir/                 # a real zip
+tar -cf out.tgz dir/
+tar -cf out.tar.xz dir/              # also .txz
+tar -cf out.tar.zst dir/             # also .tzst
+tar -cf out.tar.lzma dir/
+tar -cf out.tar.bz2 dir/             # also .tbz2
+tar -cf out.cpio dir/                # newc
+tar -cf out.cpio.Z dir/              # compress(1)-wrapped
+tar -cf out.tar.lz4 dir/
+
+# Flags override the extension when you want them to
+tar --zstd -cf out.tgz dir/          # zstd under a .tgz name — reads back by sniff
+tar -Jcf out.tar.xz dir/             # -J forces xz, like gtar
+
+# Selecting what comes out
+tar -xf out.tar dir/sub '*.go'       # member patterns
+tar -xf out.tar --strip-components=1 # drop the leading path
+tar -xf out.tar -C dest/             # extract elsewhere
+tar -xOf out.tar dir/a.txt           # one file to stdout
+tar -cf from-list.tar -T list.txt    # members from a list file
+tar -xf out.tar --exclude='*.log'
+
+# Pipes and stdin work everywhere (tar streams)
+tar -cf - -C src . | (cd dest && tar -xf -)
+cat archive.tar.gz | tar -xf -       # -f - is stdin
+
+# Appending and deleting (uncompressed and zip-family)
+tar -rf out.tar extra.txt
+tar --delete -f out.tar '*.log'      # delete by pattern
+
+# Update-style
+tar -uf out.tar dir/                 # add files newer than the archived copy
+tar -Wcf out.tar dir/                # create and verify in one pass
+
+# Safety, always on
+tar -xf evil.tar                     # "../../escape.txt" skipped with a warning
+```
+
+### cpio — the find(1) pipeline, freed from cpio files
+
+```sh
+# Classic shapes
+find . -type f | cpio -ov > a.cpio
+find . -type f | cpio -ov -H crc > a-crc.cpio    # newc (default), crc, odc
+cpio -idv < a.cpio
+cpio -it < a.zip                                 # list a zip
+cpio -idv < a.tar.zst                            # extract zstd-wrapped tar
+cpio -it '*.go' < a.tar.gz                       # member patterns
+
+# But everything else works too
+cpio -it < archive.7z
+cat a.tar.xz | cpio -it
+
+# Writing other containers from the pipe
+cpio -ov -H tar > a.tar                          # -H selects the container
+```
+
+### zip — create (any container), update, zipinfo listings
+
+```sh
+zip -r out.zip dir/                 # deflate members
+zip -r -Z store out.zip dir/        # stored members
+zip -r -Z bzip2 out.zip dir/
+zip -r -Z lzma out.zip dir/
+zip -r -Z zstd out.zip dir/
+zip -r -P secret out.zip dir/       # traditional encryption
+zip -r -t tar out.tar.gz dir/       # explicit container override: a real tar
+zip out.zip extra.txt               # add to an existing zip
+zip -d out.zip '*.log'              # delete members
+
+zipinfo out.zip                     # zipinfo-style listing
+zipinfo out.cpio                    # ...of a cpio
+zipinfo -1 out.tgz                  # ...of a gzip-wrapped tar (names only)
+```
+
+### unzip — list, test, extract, stdout — from anything
+
+```sh
+unzip -l big.tar.gz                 # list a gzip-wrapped tar
+unzip -l archive.z01                # split set
+unzip -l archive.7z
+unzip -p big.tar.gz docs/readme.md  # one member to stdout
+unzip -t archive.zip                # CRC-test every member
+unzip -q -o archive.zip -d dest/    # overwrite into dest/
+unzip archive.zip docs/ -x docs/skip-me
+unzip -P secret enc.zip             # password on the command line
+unzip enc.zip                       # ...or type it at the hidden prompt
+```
+
+Encrypted archives read regardless of who wrote them: traditional
+PKWARE, WinZip AES-128/192/256, and 7z AES-256 all decrypt with the
+password (prompted with echo off, or `-P`).
+
+### 7z / 7za / 7zr — one front end, every format
+
+```sh
+7z a out.7z dir/                    # native 7z (LZMA2, solid)
+7z a -tzip out.zip dir/             # a zip
+7z a -ttar out.tar dir/             # a tar
+7z a -tgzip out.tgz dir/
+7z a -mx0 out.7z dir/               # stored
+7z a -ppassword out.7z dir/         # AES-256
+7z a -mhe=on -ppassword out.7z dir/ # encrypt names too (header encryption)
+7z a -tzip -mem=aes256 -ppw out.zip dir/   # WinZip-AES zip
+
+7z x archive.zip -oout/             # extract with paths (note -o, no space)
+7z e archive.tar.zst -oout/         # flattened extraction
+7z l archive.cpio.Z
+7z t archive.tar.lzma               # CRC-test
+7z u out.7z dir/                    # update
+7z d out.7z '*.log'                 # delete
+7z b                                # benchmark every codec
+7z h file.txt                       # CRC-32 + SHA-256 digests
+7z x -ppassword enc.7z              # password (or the hidden prompt)
+```
+
+### xtar — the native face
+
+```sh
+xtar c out.tgz dir/                 # verbs: c x l t i
+xtar x archive.zip
+xtar l archive.7z
+xtar t archive.tar.zst              # verify structure and checksums
+xtar c note.txt.gz note.txt         # a bare gzip of one file
+xtar l note.txt.gz                  # ...whose member is named note.txt
+xtar --sniff mystery-file           # identify without extracting:
+# mystery-file: gzip → tar (gnu) : 3 members, 1.2 MB → 4.7 MB
+xtar --sniff whole.z01              # the split set, assembled size
+```
+
+### Pipes, streams, and memory
+
+Tar and cpio read **streaming** — one member at a time through the
+codec chain — so a 40 GB tarball lists in a few MB of RSS, from a
+file or a pipe; `-f -` is stdin and `-O` writes members to stdout.
+Zip, 7z, and bare streams are whole-buffer (their directories sit at
+the end or the stream is one member).
+
+### What every command refuses to do
+
+* Write a member outside the destination (`../` paths are skipped and
+  warned, exit 1 — the tar behavior, everywhere).
+* Silently pass through an unsupported codec: rar and friends error
+  with a pointer to the "deliberately not supported" section below.
+* Differ on exit codes: 0 clean, 1 warnings, 2 fatal everywhere (the
+  unzip 3/4/5/9/50 and 7z 7/8 families preserved for scripts).
 
 ---
 
@@ -230,7 +427,8 @@ they don't conflict).
   `--overwrite`, `--skip-old-files`, `--strip-components=N`, `--exclude=PATTERN`,
   `-T/--files-from`, `--null`, `--transform`, `-w`, `-W/--verify`, `--totals`,
   `--numeric-owner`, `--owner/--group`, `--format=gnu|pax|ustar|v7`,
-  `-S/--sparse`, compression flags `-z -j -J --lzma --zstd -Z -a`.
+  `-S/--sparse`, compression flags `-z -j -J --lzma --zstd -Z` (the
+  output extension already selects compression, so there is no `-a`).
   The zip dialect's `-Z` selects the member method: `store`, `deflate`,
   `bzip2`, `lzma` (method 14), `zstd` (the WinZip id; the zstd project's
   own id is read too); 7z's `-mm=lzma`/`-mm=zstd` map to the same methods
