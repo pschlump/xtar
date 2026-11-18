@@ -117,7 +117,9 @@ Every archive xtar handles decomposes along two independent axes:
 1. **Container** — how members are catalogued: `tar` (v7/ustar/GNU/PAX),
    `cpio` (binary/odc/newc/crc), `zip`, `7z`.
 2. **Stream compression** — a whole-stream transform wrapped *around* a
-   container: gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd.
+   container: gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd
+   (real greedy+predefined-FSE compression; blocks that do not shrink
+   store raw).
 
 tar-family tools put compression *outside* the container. zip and 7z compress
 *inside*, per member. Both axes can stack, so a file is an onion to peel:
