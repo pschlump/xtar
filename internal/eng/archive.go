@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pschlump/xtar/internal/arfmt"
 	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/cpiofmt"
 	"github.com/pschlump/xtar/internal/layer"
@@ -465,6 +466,14 @@ func parseContainer(a *Archive, r sniff.Result, cur []byte) error {
 		a.Format = "7z"
 		a.Members = sz.Members
 		a.Notes = append(a.Notes, sz.Notes...)
+	case "ar":
+		ar, err := arfmt.Parse(cur)
+		if err != nil {
+			return fmt.Errorf("%w", err)
+		}
+		a.Format = "ar"
+		a.Members = ar.Members
+		a.Notes = append(a.Notes, ar.Notes...)
 	default:
 		return UnsupportedError(r.Format)
 	}

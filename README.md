@@ -102,8 +102,9 @@ and the output filename's extension picks what `c`/`a` writes.
 
 The formats on the table: `tar`, `cpio` (newc/crc/odc/binary), `zip`
 (deflate/store/bzip2/LZMA/zstd members, zip64, split sets, AES),
-native `7z` (LZMA/LZMA2/delta/deflate/bzip2/copy/BCJ/AES), and bare
-compressed streams — gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd —
+native `7z` (LZMA/LZMA2/delta/deflate/bzip2/copy/BCJ/AES), `ar`
+(.a static libraries and `.deb` packages), and bare compressed
+streams — gzip, bzip2, compress(.Z), lz4, xz, lzma, zstd —
 wrapping any container, in any combination.
 
 ### tar / gtar — extract, list, test, create, update
@@ -117,6 +118,8 @@ tar -xf archive.tar.zst              # zstd
 tar -xf archive.tar.lzma             # lzma-alone
 tar -xf archive.7z                   # native 7z
 tar -xf archive.z01                  # a split set (z01…zNN + .zip)
+tar -tf package.deb                  # a Debian package (ar of tars)
+tar -xOf package.deb data.tar.xz | tar -tf -   # drill into the payload
 tar -tf archive.tar.bz2              # list instead of extracting
 tar -tvf archive.zip                 # verbose listing, permissions shown
 tar -xf actually-a-tar.tgz           # extension lies; magic wins (a note prints)
@@ -356,7 +359,7 @@ ambiguity and drives *creation*; sniffing decides *reading*.
 | lz4 frame     | `04 22 4d 18`                             | skippable + concatenated frames ok       |
 | zip           | `PK\x03\x04` / `PK\x05\x06` (empty) / `PK\x07\x08` (spanned) | zip64 supported          |
 | 7z            | `7z\xbc\xaf\x27\x1c`                      | 7z read (M5)                             |
-| ar            | `!<arch>\n`                               | read-side, not yet scheduled             |
+| ar            | `!<arch>\n`                               | ar read (.a libraries, .deb packages)    |
 | rar           | `Rar!\x1a\x07`                            | out of scope (see [limits](#what-is-deliberately-not-supported-yet)) |
 | cpio (odc)    | `"070707"` at 0                           | ASCII portable                           |
 | cpio (newc)   | `"070701"` at 0                           | SVR4                                     |
@@ -398,6 +401,7 @@ the bsdtar write-by-extension precedent):
 | `.cpio`                         | cpio newc                      |
 | `.cpio.gz`, `.cpio.Z`, …        | compressed cpio, same table    |
 | `.zip`                          | zip, deflate level 6           |
+| `.deb`, `.a`                    | ar container (read)            |
 | `.7z`                           | 7z container (read)            |
 
 Explicit flags override extensions: tar's `-z/-j/-J/--zstd/-Z` and

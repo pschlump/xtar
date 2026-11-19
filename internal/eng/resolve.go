@@ -80,6 +80,9 @@ func ResolveByName(name, defaultContainer string) (Resolved, error) {
 		case sfx(base, ".7z"):
 			r.Container = "7z"
 			return r, nil
+		case sfx(base, ".deb"), sfx(base, ".a"):
+			r.Container = "ar"
+			return r, nil
 		}
 		break
 	}

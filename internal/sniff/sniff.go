@@ -69,6 +69,8 @@ func Detect(b []byte) Result {
 	case has(b, 0, "Rar!\x1a\x07"):
 		return Result{"rar", Unsupported, ""}
 	case has(b, 0, "!<arch>\n"):
+		return Result{"ar", Container, ""}
+	case has(b, 0, "!<arch>\n"):
 		return Result{"ar", Unsupported, ""}
 	case has(b, 0, "070701"):
 		return Result{"cpio", Container, "newc"}

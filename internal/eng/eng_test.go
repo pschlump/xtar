@@ -7,12 +7,15 @@ MIT Licensed.
 package eng
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/pschlump/xtar/internal/member"
 	"github.com/pschlump/xtar/internal/pat"
 	"github.com/pschlump/xtar/internal/walk"
 )
@@ -462,5 +465,87 @@ func TestCreate7z(t *testing.T) {
 			}
 			break
 		}
+	}
+}
+
+// TestOpenDeb reads a handcrafted Debian package: an ar of
+// debian-binary + two compressed tars.  The ar members surface as
+// members; drilling into them is a pipe away.
+func TestOpenDeb(t *testing.T) {
+	var ar []byte
+	ar = append(ar, []byte("!<arch>\n")...)
+	add := func(name string, payload []byte) {
+		h := fmt.Sprintf("%-16s%-12s%-6s%-6s%-8s%-10s`\n", name, "1700000000", "0", "0", "100644", fmt.Sprint(len(payload)))
+		ar = append(ar, []byte(h)...)
+		ar = append(ar, payload...)
+		if len(payload)%2 == 1 {
+			ar = append(ar, '\n')
+		}
+	}
+	add("debian-binary", []byte("2.0\n"))
+	tree(t) // the shared fixture; walk from its working directory
+	tgz := filepath.Join(t.TempDir(), "c.tar.gz")
+	if _, err := Create(&CreateOpts{
+		Path:             tgz,
+		DefaultContainer: "tar",
+		Walk:             walkFiles([]string{"proj"}),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	blob, err := os.ReadFile(tgz)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add("control.tar.gz", blob)
+	add("data.tar.gz", blob)
+
+	out := filepath.Join(t.TempDir(), "grep.deb")
+	if err := os.WriteFile(out, ar, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	a, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Format != "ar" || len(a.Members) != 3 {
+		t.Fatalf("open: %s %+v", a.Format, a.Members)
+	}
+	if a.Members[0].Name != "debian-binary" || string(a.Members[0].Data) != "2.0\n" {
+		t.Fatalf("debian-binary: %+v", a.Members[0])
+	}
+	if a.Members[2].Name != "data.tar.gz" || !bytes.Equal(a.Members[2].Data, blob) {
+		t.Fatalf("data.tar.gz mismatch")
+	}
+
+	// the pipe drill-in: member to stdout, back through the engine
+	a2, err := OpenFile(out, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var picked *member.Member
+	for i := range a2.Members {
+		if a2.Members[i].Name == "control.tar.gz" {
+			picked = &a2.Members[i]
+		}
+	}
+	if picked == nil {
+		t.Fatal("control.tar.gz not found")
+	}
+	inner, err := Decode(picked.Data, "")
+	if err != nil {
+		t.Fatalf("inner decode: %v", err)
+	}
+	if inner.Format != "tar" || len(inner.Members) == 0 {
+		t.Fatalf("inner: %s %+v", inner.Format, inner.Members)
+	}
+
+	// .a static libraries resolve the same way
+	lib := filepath.Join(t.TempDir(), "lib.a")
+	if err := os.WriteFile(lib, ar, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b, err := OpenFile(lib, "")
+	if err != nil || b.Format != "ar" {
+		t.Fatalf("lib.a: %v %s", err, b.Format)
 	}
 }
