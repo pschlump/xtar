@@ -687,7 +687,12 @@ Every codec xtar uses is pluto — no stdlib `compress/*`, no third-party code:
 | bzip2                   | `pluto/bzip2`          | `Compress/CompressLevel/Expand` |
 | compress .Z (zopen LZW) | `pluto/compress_z`     | `Compress/CompressBits/Expand` |
 | lz4 frames (v1.6.5)     | `pluto/lz4`            | same      |
+| xz (LZMA2 container)    | `pluto/xz`             | same + `DecodeLZMA2` (7z members) |
+| lzma-alone (.lzma)      | `pluto/lzma`            | same + `DecodeRaw` (7z/zip members) |
+| zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy+predefined-FSE encode |
+| LZMA/LZMA2/delta/BCJ/AES (7z) | `pluto/xz`, `pluto/lzma` + xtar `sevenzfmt` | — |
 | CRC-32 (gzip/zip/cpio-crc checks) | `pluto/crc` | `MakeTable32/Checksum32` |
+| XXH64 (zstd checksums)  | xtar `zipfmt`/pluto `zstd` (internal `xxhash.go`) | — |
 | XXH32 (lz4 checksums)   | `pluto/lz4` (internal `xxh32.go`) | — |
 
 `pluto/lzw`, `pluto/huffman`, and `pluto/run_length` are teaching-format
@@ -727,12 +732,13 @@ file, and a bare compressed stream is a single member.
 * **Multi-tape/tape devices** (`-M`, `mt`-adjacent behavior). The `TAPE`
   environment variable *is* honored (it landed with M1); multi-volume
   itself stays out.
-* **`zip -e` writing AES** (reading AES arrives with 7z crypto in M5);
-  traditional PKWARE encryption is read and written since M3.
-* **7z writing** its own container (reading is M5, writing is M6+). M3
-  shipped the `7z` *dialect* — the familiar `a/l/t/x/e/d` verbs driving
-  the tar/cpio/zip containers and every codec layer — which covers every
-  task that does not require the native container.
+* **`zip -e` writing AES** — the zip dialect's `-e`/`-P` still writes
+  traditional PKWARE (the compat choice); AES zip writing exists via
+  the 7z dialect (`7z a -tzip -mem=aes256 -p<pw>`), and both read
+  everywhere.  A `zip -Z aes` spelling is a small future add.
+* ~~**7z writing**~~ — native 7z write shipped with M6 (`7z a -t7z`,
+  solid LZMA folders, stored at `-mx0`, AES-256; `u`/`d` rebuild).  The
+  7z *dialect* has driven tar/cpio/zip since M3.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
   macOS resource forks — still out (sparse and PAX write shipped in M4).
 
