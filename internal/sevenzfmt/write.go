@@ -16,15 +16,31 @@ import (
 
 	"github.com/pschlump/pluto/crc"
 	"github.com/pschlump/pluto/lzma"
+	"github.com/pschlump/pluto/ppmd"
 	"github.com/pschlump/xtar/internal/member"
 )
 
+// Method selects the solid-folder codec Build writes.
+type Method struct {
+	Codec int // MethodLZMA (the default) or MethodPPMd
+
+	// PPMd settings when Codec is MethodPPMd.
+	PPMDOrder int    // model order, 2..64
+	PPMDMem   uint32 // model memory in bytes
+}
+
+const (
+	MethodLZMA = iota
+	MethodPPMd
+)
+
 // Build encodes mems as a 7z archive.  Non-empty members form one
-// solid folder — LZMA at level > 0, stored bytes at level 0 — and a
-// password wraps it in AES256 (2^19-round KDF, random IV).  Empty
-// members and directories ride the FilesInfo bits.  Symlinks store
-// their target as the member data, the way 7-Zip's -snl does.
-func Build(mems []member.Member, password string, level int) ([]byte, error) {
+// solid folder — LZMA (the default) or PPMd at level > 0, stored
+// bytes at level 0 — and a password wraps it in AES256 (2^19-round
+// KDF, random IV).  Empty members and directories ride the FilesInfo
+// bits.  Symlinks store their target as the member data, the way
+// 7-Zip's -snl does.
+func Build(mems []member.Member, password string, level int, m Method) ([]byte, error) {
 	if password != "" && level == 0 {
 		return nil, errors.New("7z: stored archives cannot be encrypted (use a compression level)")
 	}
@@ -50,8 +66,13 @@ func Build(mems []member.Member, password string, level int) ([]byte, error) {
 
 	// Pack the folder: LZMA — the alone-format stream minus its
 	// header; the size is known so the trailing end marker is simply
-	// never reached — optionally wrapped in AES.
+	// never reached — or PPMd, optionally wrapped in AES.
 	const dictSize = 1 << 23
+	ppmdProps := func() []byte {
+		props := []byte{byte(m.PPMDOrder), 0, 0, 0, 0}
+		binary.LittleEndian.PutUint32(props[1:], m.PPMDMem)
+		return props
+	}
 	var packed []byte
 	var folder []byte
 	var aesOut int64 // the AES coder's declared output: unpadded plaintext
@@ -59,6 +80,32 @@ func Build(mems []member.Member, password string, level int) ([]byte, error) {
 	case level == 0:
 		packed = solid
 		folder = appendCoder(putU64(nil, 1), idCopy, nil)
+	case m.Codec == MethodPPMd && password == "":
+		packed = ppmd.Encode(solid, m.PPMDOrder, m.PPMDMem)
+		folder = appendCoder(putU64(nil, 1), idPPMd, ppmdProps())
+	case m.Codec == MethodPPMd:
+		props := ppmdProps()
+		iv := make([]byte, 16)
+		if _, err := rand.Read(iv); err != nil {
+			return nil, err
+		}
+		aesProps := append([]byte{19 | 1<<6, 0x0F}, iv...) // power 19, no salt, 16-byte IV
+		folder = putU64(nil, 2)                            // AES feeding PPMd
+		folder = appendCoder(folder, idAES, aesProps)
+		folder = appendCoder(folder, idPPMd, props)
+		folder = putU64(folder, 1) // bind pair: in-stream 1 (PPMd's input)
+		folder = putU64(folder, 0) // takes out-stream 0 (AES's output)
+		plain := ppmd.Encode(solid, m.PPMDOrder, m.PPMDMem)
+		padded := append([]byte{}, plain...)
+		if r := len(padded) % 16; r != 0 {
+			padded = append(padded, make([]byte, 16-r)...)
+		}
+		enc, err := aesEncrypt(padded, aesProps, password)
+		if err != nil {
+			return nil, err
+		}
+		packed = enc
+		aesOut = int64(len(plain))
 	case password == "":
 		z := lzma.Compress(solid)
 		packed = z[13:]

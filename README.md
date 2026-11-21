@@ -515,10 +515,12 @@ Compatible with p7zip's command/switch shape.
   (7-Zip ≥ 15.06 behavior).
 * Native `.7z` archives read *and write*: reading covers every method
   the 7-Zip CLI writes plus LZMA, LZMA2, delta, deflate, bzip2, copy,
-  BCJ (x86), and AES256 (content or `-mhe=on` header encryption); `a
-  -t7z` writes solid LZMA folders (stored at `-mx0`, AES256 with a
-  password), `u`/`d` rebuild in place, and the system 7zz plus
-  libarchive validate both directions.
+  BCJ (x86), PPMd, and AES256 (content or `-mhe=on` header
+  encryption); `a -t7z` writes solid LZMA folders by default, PPMd
+  folders with `-m0=PPMd[:o=2-64][:mem=SIZE]` (order 6, 16 MB by
+  default; our PPMd streams are byte-identical to 7-Zip's), stored at
+  `-mx0`, AES256 with a password — `u`/`d` rebuild in place, and the
+  system 7zz plus libarchive validate both directions.
 * `-t` maps to the global `--format=`; an unknown `-t` value is an error.
 
 ### xtar dialect
@@ -694,7 +696,7 @@ Every codec xtar uses is pluto — no stdlib `compress/*`, no third-party code:
 | xz (LZMA2 container)    | `pluto/xz`             | same + `DecodeLZMA2` (7z members) |
 | lzma-alone (.lzma)      | `pluto/lzma`            | same + `DecodeRaw` (7z/zip members) |
 | zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy+predefined-FSE encode |
-| PPMd variant-H (7z)     | `pluto/ppmd`            | `Decode(data, order, memSize, outSize) []byte` |
+| PPMd variant-H (7z)     | `pluto/ppmd`            | `Decode(data, order, memSize, outSize)`, `Encode(data, order, memSize)` — the encoder is byte-identical to 7zz |
 | LZMA/LZMA2/delta/BCJ/PPMd/AES (7z) | `pluto/xz`, `pluto/lzma`, `pluto/ppmd` + xtar `sevenzfmt` | — |
 | CRC-32 (gzip/zip/cpio-crc checks) | `pluto/crc` | `MakeTable32/Checksum32` |
 | XXH64 (zstd checksums)  | xtar `zipfmt`/pluto `zstd` (internal `xxhash.go`) | — |
@@ -709,8 +711,8 @@ variants (different wire formats) and are **not** used for any archive format
 | needed for        | missing codec      |
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
-| PPMd read (7z)    | *shipped (pluto/ppmd)* |
-| PPMd write (7z), zip method 98 (variant I) | PPMd encoder, Ppmd8 |
+| PPMd read and write (7z) | *shipped (pluto/ppmd)* |
+| zip method 98 (PPMd variant I) | Ppmd8 |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
 `xtar: lzma/zstd compression not yet supported — see README "What is deliberately
@@ -743,7 +745,8 @@ file, and a bare compressed stream is a single member.
   the 7z dialect (`7z a -tzip -mem=aes256 -p<pw>`), and both read
   everywhere.  A `zip -Z aes` spelling is a small future add.
 * ~~**7z writing**~~ — native 7z write shipped with M6 (`7z a -t7z`,
-  solid LZMA folders, stored at `-mx0`, AES-256; `u`/`d` rebuild).  The
+  solid LZMA folders — now PPMd too, via `-m0=PPMd` — stored at
+  `-mx0`, AES-256; `u`/`d` rebuild).  The
   7z *dialect* has driven tar/cpio/zip since M3.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
   macOS resource forks — still out (sparse and PAX write shipped in M4).

@@ -27,16 +27,17 @@ import (
 // The archive is rebuilt whole (the whole-buffer model); compressed
 // archives are refused the way GNU tar does.
 type UpdateOpts struct {
-	Path      string
-	Format    string // write-variant override; "" keeps the source variant
-	Delete    []*pat.Pattern
-	Concat    []string // -A source archives
-	Walk      walk.Opts
-	Update    bool // -u: skip files not newer than the archived copy
-	Password  string
-	Level     int // compression level for rebuilds (7z); 0 stores, -1 defaults
-	ZipMethod int // zipfmt.Method*; -1 (unset) defaults to deflate
-	Warn      func(string)
+	Path         string
+	Format       string // write-variant override; "" keeps the source variant
+	Delete       []*pat.Pattern
+	Concat       []string // -A source archives
+	Walk         walk.Opts
+	Update       bool // -u: skip files not newer than the archived copy
+	Password     string
+	Level        int              // compression level for rebuilds (7z); 0 stores, -1 defaults
+	SevenZMethod sevenzfmt.Method // 7z folder codec for rebuilds
+	ZipMethod    int              // zipfmt.Method*; -1 (unset) defaults to deflate
+	Warn         func(string)
 }
 
 // UpdateResult reports what an Update did.
@@ -155,7 +156,7 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	case "cpio":
 		blob, err = cpiofmt.Build(format, mems)
 	case "7z":
-		blob, err = sevenzfmt.Build(mems, o.Password, o.Level)
+		blob, err = sevenzfmt.Build(mems, o.Password, o.Level, o.SevenZMethod)
 	case "zip":
 		blob, err = zipfmt.Build(mems, a.Comment, "")
 	}

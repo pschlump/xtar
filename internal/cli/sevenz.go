@@ -9,10 +9,12 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/pschlump/xtar/internal/eng"
 	"github.com/pschlump/xtar/internal/pat"
+	"github.com/pschlump/xtar/internal/sevenzfmt"
 	"github.com/pschlump/xtar/internal/walk"
 	"github.com/pschlump/xtar/internal/zipfmt"
 )
@@ -205,9 +207,43 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 			method = int(zipfmt.MethodDeflate)
 		}
 	}
+	var method7z sevenzfmt.Method
+	is7z := container == "7z" ||
+		(container == "" && strings.HasSuffix(strings.ToLower(archive), ".7z"))
+	if is7z && methodName != "" {
+		// -m0=CODEC selects the 7z folder codec: PPMd[:o=N][:mem=SIZE]
+		// (LZMA is the default; -mx0 still stores)
+		name, rest, _ := strings.Cut(methodName, ":")
+		switch strings.ToLower(name) {
+		case "ppmd":
+			method7z.Codec = sevenzfmt.MethodPPMd
+			method7z.PPMDOrder, method7z.PPMDMem = 6, 1<<24
+			for _, opt := range strings.Split(rest, ":") {
+				k, v, _ := strings.Cut(opt, "=")
+				switch strings.ToLower(k) {
+				case "o":
+					n, err := strconv.Atoi(v)
+					if err != nil || n < 2 || n > 64 {
+						return e.fatal("-m0=PPMd: order must be 2..64")
+					}
+					method7z.PPMDOrder = n
+				case "mem":
+					mem, ok := parseMemSize(v)
+					if !ok || mem < 1<<11 || mem > 1<<30 {
+						return e.fatal("-m0=PPMd: mem must be 2KB..1GB (e.g. 16m)")
+					}
+					method7z.PPMDMem = mem
+				}
+			}
+		case "lzma", "":
+			// the default
+		default:
+			return e.fatal("-m0=%s: unsupported 7z method (PPMd)", name)
+		}
+	}
 	if container == "zip" {
 		// -m0=CODEC / -mm=CODEC select the zip member method
-		switch methodName {
+		switch strings.ToLower(methodName) {
 		case "lzma":
 			method = int(zipfmt.MethodLZMA)
 		case "zstd":
@@ -216,6 +252,8 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 			method = int(zipfmt.MethodBZip2)
 		case "deflate":
 			method = int(zipfmt.MethodDeflate)
+		case "ppmd":
+			return e.fatal("-m0=PPMd: zip PPMd is variant I (method 98), not supported — write a .7z archive")
 		}
 	}
 
@@ -233,12 +271,13 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 
 	if _, err := os.Stat(archive); err == nil && len(files) > 0 {
 		res, err := eng.Update(&eng.UpdateOpts{
-			Path:      archive,
-			Walk:      wopts,
-			Update:    updateOnly,
-			Password:  password,
-			ZipMethod: method,
-			Warn:      e.warn,
+			Path:         archive,
+			Walk:         wopts,
+			Update:       updateOnly,
+			Password:     password,
+			ZipMethod:    method,
+			SevenZMethod: method7z,
+			Warn:         e.warn,
 		})
 		if err != nil {
 			return e.fatal("%v", err)
@@ -252,6 +291,7 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 		Codec:            codec,
 		Bare:             codec != "",
 		ZipMethod:        method,
+		SevenZMethod:     method7z,
 		ZipPassword:      password,
 		ZipAES:           aesLevel,
 		Level:            level,
@@ -304,4 +344,25 @@ func sevenzList(e *env, archive string, password string, includes, excludes []*p
 	}
 	eng.List(a, &eng.ListOpts{Out: os.Stdout, Style: "7z", Verbose: 1, Include: includes, Exclude: excludes, Warn: e.warn})
 	return exitOK
+}
+
+// parseMemSize reads a byte size with an optional k/m/g suffix.
+func parseMemSize(s string) (uint32, bool) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	mult := uint64(1)
+	switch {
+	case strings.HasSuffix(s, "g"):
+		mult, s = 1<<30, s[:len(s)-1]
+	case strings.HasSuffix(s, "m"):
+		mult, s = 1<<20, s[:len(s)-1]
+	case strings.HasSuffix(s, "k"):
+		mult, s = 1<<10, s[:len(s)-1]
+	case strings.HasSuffix(s, "b"):
+		s = s[:len(s)-1]
+	}
+	n, err := strconv.ParseUint(s, 10, 32)
+	if err != nil || n == 0 || n*mult > 1<<30 {
+		return 0, false
+	}
+	return uint32(n * mult), true
 }

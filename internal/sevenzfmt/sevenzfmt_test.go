@@ -286,12 +286,15 @@ func TestBuildRoundTrip(t *testing.T) {
 		name string
 		pw   string
 		lvl  int
+		m    Method
 	}{
-		{"lzma", "", 6},
-		{"copy", "", 0},
-		{"aes", "secret-pw", 6},
+		{"lzma", "", 6, Method{}},
+		{"copy", "", 0, Method{}},
+		{"aes", "secret-pw", 6, Method{}},
+		{"ppmd", "", 6, Method{Codec: MethodPPMd, PPMDOrder: 6, PPMDMem: 1 << 20}},
+		{"ppmd-aes", "secret-pw", 6, Method{Codec: MethodPPMd, PPMDOrder: 4, PPMDMem: 1 << 20}},
 	} {
-		blob, err := Build(testMembers(), tc.pw, tc.lvl)
+		blob, err := Build(testMembers(), tc.pw, tc.lvl, tc.m)
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}

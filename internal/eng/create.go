@@ -23,15 +23,16 @@ import (
 
 // CreateOpts is the whole create operation, dialect-independent.
 type CreateOpts struct {
-	Path             string // "-" writes to stdout
-	Container        string // explicit container override ("tar","cpio","zip"); "" resolves by name
-	Codec            string // explicit codec override; "" resolves by name
-	Bare             bool   // create a bare compressed stream of one input (7z -t gzip)
-	Level            int    // codec level when the codec has one
-	DefaultContainer string // dialect default when the name carries no container suffix
-	TarFormat        string // gnu | ustar | pax | v7
-	CpioFormat       string // newc | crc | odc
-	ZipMethod        int    // zipfmt.Method*: -1 (unset) defaults to deflate
+	Path             string           // "-" writes to stdout
+	Container        string           // explicit container override ("tar","cpio","zip"); "" resolves by name
+	Codec            string           // explicit codec override; "" resolves by name
+	Bare             bool             // create a bare compressed stream of one input (7z -t gzip)
+	Level            int              // codec level when the codec has one
+	DefaultContainer string           // dialect default when the name carries no container suffix
+	TarFormat        string           // gnu | ustar | pax | v7
+	CpioFormat       string           // newc | crc | odc
+	ZipMethod        int              // zipfmt.Method*: -1 (unset) defaults to deflate
+	SevenZMethod     sevenzfmt.Method // 7z folder codec (zero value: LZMA by level)
 	ZipPassword      string
 	ZipAES           int // WinZip AES strength (1-3) for zip output; 0 = traditional
 	ZipComment       string
@@ -110,7 +111,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 		a.Format = "cpio"
 		a.Variant = cpioVariant
 	case "7z":
-		blob, err := sevenzfmt.Build(mems, o.ZipPassword, o.Level)
+		blob, err := sevenzfmt.Build(mems, o.ZipPassword, o.Level, o.SevenZMethod)
 		if err != nil {
 			return nil, err
 		}
