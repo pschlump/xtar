@@ -253,7 +253,7 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 		case "deflate":
 			method = int(zipfmt.MethodDeflate)
 		case "ppmd":
-			return e.fatal("-m0=PPMd: zip PPMd is variant I (method 98), not supported — write a .7z archive")
+			method = int(zipfmt.MethodPPMd) // zip method 98: variant I
 		}
 	}
 

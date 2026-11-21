@@ -22,6 +22,7 @@ import (
 	"github.com/pschlump/pluto/crc"
 	"github.com/pschlump/pluto/deflate"
 	"github.com/pschlump/pluto/lzma"
+	"github.com/pschlump/pluto/ppmd8"
 	"github.com/pschlump/pluto/zstd"
 	"github.com/pschlump/xtar/internal/charset"
 	"github.com/pschlump/xtar/internal/member"
@@ -34,6 +35,7 @@ const (
 	MethodBZip2   uint16 = 12
 	MethodLZMA    uint16 = 14 // the LZMA-alone coder under a 9-byte zip header
 	MethodZstd    uint16 = 93 // WinZip's zstd id — the one other readers take
+	MethodPPMd    uint16 = 98 // PPMd variant-I, props inline in the stream
 	// methodZstdZip is the zstd project's own zip id (20); its payload
 	// is identical, so it is read and normalized to the WinZip id.
 	methodZstdZip uint16 = 20
@@ -479,6 +481,18 @@ func readMember(b []byte, e *cdEntry, password string, shift int64) (*member.Mem
 			return nil, fmt.Errorf("zip: member %s: bad zstd stream", e.name)
 		}
 		data = out
+	case MethodPPMd:
+		if len(data) > 0 { // empty members carry no stream at all
+			pr, ok := ppmd8.ParseProps(data)
+			if !ok {
+				return nil, fmt.Errorf("zip: member %s: bad PPMd properties", e.name)
+			}
+			out := ppmd8.Decode(data[2:], pr, int64(e.usize))
+			if out == nil {
+				return nil, fmt.Errorf("zip: member %s: bad PPMd stream", e.name)
+			}
+			data = out
+		}
 	default:
 		return nil, fmt.Errorf("zip: member %s uses compression method %d, which is not supported", e.name, e.method)
 	}
@@ -645,6 +659,14 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 				binary.LittleEndian.PutUint32(comp[5:], 1<<23) // 8 MiB dictionary
 			case MethodZstd:
 				comp = zstd.Compress(data)
+			case MethodPPMd:
+				pr := defaultPPMdProps(len(data))
+				props := pr.Bytes()
+				comp = append(props[:], ppmd8.Encode(data, pr)...)
+				if len(comp) >= len(data) {
+					// what 7-Zip's zip writer does when PPMd does not pay
+					method, comp = MethodStore, data
+				}
 			default:
 				return nil, fmt.Errorf("zip: %s: method %d is not writable", m.Name, method)
 			}
@@ -702,7 +724,7 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 				info.crc = 0
 				info.verMade = 3<<8 | 51 // AES entries are made by 5.1
 			}
-			if method == MethodLZMA || method == MethodZstd {
+			if method == MethodLZMA || method == MethodZstd || method == MethodPPMd {
 				info.verMade = 3<<8 | 63 // the newer methods are made by 6.3
 			}
 		}
@@ -726,7 +748,7 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 		switch info.method {
 		case methodWinZipAES:
 			verNeed = 51 // WinZip AES declares version 5.1
-		case MethodLZMA, MethodZstd:
+		case MethodLZMA, MethodZstd, MethodPPMd:
 			verNeed = 63 // the newer member methods declare 6.3
 		}
 		binary.LittleEndian.PutUint16(hdr[4:], verNeed)
@@ -768,7 +790,7 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 		switch info.method {
 		case methodWinZipAES:
 			cdVerNeed = 51
-		case MethodLZMA, MethodZstd:
+		case MethodLZMA, MethodZstd, MethodPPMd:
 			cdVerNeed = 63
 		}
 		le.PutUint16(hdr[6:], cdVerNeed)
@@ -895,4 +917,19 @@ func isASCII(s string) bool {
 		}
 	}
 	return true
+}
+
+// defaultPPMdProps mirrors 7-Zip's level-5 defaults for zip PPMd:
+// order 8, restore-by-restart, and memory clamped by the member size
+// (the smallest power-of-two MB whose sixteenth the data fits in),
+// so ours and 7zz's writers choose the same model.
+func defaultPPMdProps(size int) ppmd8.Props {
+	mem := 16
+	for m := 1; m < mem; m <<= 1 {
+		if int64(size) <= (int64(m)<<20)/16 {
+			mem = m
+			break
+		}
+	}
+	return ppmd8.Props{Order: 8, MemMB: mem, Restor: 0}
 }

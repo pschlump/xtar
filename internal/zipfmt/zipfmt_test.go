@@ -492,6 +492,7 @@ func TestLZMAAndZstdMethods(t *testing.T) {
 	}{
 		{"lzma", MethodLZMA},
 		{"zstd", MethodZstd},
+		{"ppmd", MethodPPMd},
 	} {
 		mems := []member.Member{{Name: "d/big.txt", Mode: 0o644, Method: tc.method, Data: text}}
 		blob, err := Build(mems, "", "")
@@ -538,5 +539,72 @@ func TestLZMAAndZstdMethods(t *testing.T) {
 	blob[j+11] = 0
 	if a, err := Parse(blob, ""); err != nil || !bytes.Equal(a.Members[0].Data, text) {
 		t.Errorf("zstd method-20 form: %v", err)
+	}
+}
+
+// TestPPMdZip: our method-98 members are byte-identical to 7zz's for
+// the same input (same props, same stream, same header fields), our
+// reader takes 7zz's members, and incompressible input falls back to
+// stored exactly as 7-Zip's zip writer does.
+func TestPPMdZip(t *testing.T) {
+	text := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 400)
+	mems := []member.Member{{Name: "a.txt", Mode: 0o644, Method: MethodPPMd, Data: text}}
+	ours, err := Build(mems, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bin := ""
+	for _, n := range []string{"7zz", "7z"} {
+		if p, err := exec.LookPath(n); err == nil {
+			bin = p
+			break
+		}
+	}
+	if bin != "" {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "a.txt")
+		if err := os.WriteFile(src, text, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		arc := filepath.Join(dir, "g.zip")
+		if out, err := exec.Command(bin, "a", "-bd", "-y", "-tzip", "-m0=PPMd", arc, src).CombinedOutput(); err != nil {
+			t.Skipf("7zz: %v: %s", err, out)
+		}
+		golden, err := os.ReadFile(arc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// same member payload: props + stream, byte for byte
+		payload := func(z []byte) []byte {
+			nlen := int(z[26])
+			elen := int(z[28])
+			csize := int(z[18]) | int(z[19])<<8 | int(z[20])<<16 | int(z[21])<<24
+			return z[30+nlen+elen : 30+nlen+elen+csize]
+		}
+		if !bytes.Equal(payload(ours), payload(golden)) {
+			t.Errorf("payload not byte-identical to 7zz: %d vs %d bytes", len(payload(ours)), len(payload(golden)))
+		}
+		// our reader takes their archive
+		a, err := Parse(golden, "")
+		if err != nil || !bytes.Equal(a.Members[0].Data, text) {
+			t.Errorf("7zz golden parse: %v", err)
+		}
+	}
+
+	// incompressible input stores instead
+	rnd := make([]byte, 4000)
+	sd := uint32(3)
+	for i := range rnd {
+		sd = sd*1664525 + 1013904223
+		rnd[i] = byte(sd >> 23)
+	}
+	rmems := []member.Member{{Name: "r.bin", Mode: 0o644, Method: MethodPPMd, Data: rnd}}
+	rblob, err := Build(rmems, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := binary.LittleEndian.Uint16(rblob[8:10]); m != MethodStore {
+		t.Errorf("incompressible PPMd member stored as method %d, want 0", m)
 	}
 }

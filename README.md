@@ -191,6 +191,7 @@ zip -r -Z store out.zip dir/        # stored members
 zip -r -Z bzip2 out.zip dir/
 zip -r -Z lzma out.zip dir/
 zip -r -Z zstd out.zip dir/
+zip -r -Z ppmd out.zip dir/          # PPMd variant-I, method 98
 zip -r -P secret out.zip dir/       # traditional encryption
 zip -r -t tar out.tar.gz dir/       # explicit container override: a real tar
 zip out.zip extra.txt               # add to an existing zip
@@ -697,6 +698,7 @@ Every codec xtar uses is pluto — no stdlib `compress/*`, no third-party code:
 | lzma-alone (.lzma)      | `pluto/lzma`            | same + `DecodeRaw` (7z/zip members) |
 | zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy+predefined-FSE encode |
 | PPMd variant-H (7z)     | `pluto/ppmd`            | `Decode(data, order, memSize, outSize)`, `Encode(data, order, memSize)` — the encoder is byte-identical to 7zz |
+| PPMd variant-I, zip method 98 | `pluto/ppmd8`   | `Decode(data, Props, outSize)`, `Encode(data, Props)` — byte-identical to 7zz, both restore methods |
 | LZMA/LZMA2/delta/BCJ/PPMd/AES (7z) | `pluto/xz`, `pluto/lzma`, `pluto/ppmd` + xtar `sevenzfmt` | — |
 | CRC-32 (gzip/zip/cpio-crc checks) | `pluto/crc` | `MakeTable32/Checksum32` |
 | XXH64 (zstd checksums)  | xtar `zipfmt`/pluto `zstd` (internal `xxhash.go`) | — |
@@ -712,7 +714,10 @@ variants (different wire formats) and are **not** used for any archive format
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
 | PPMd read and write (7z) | *shipped (pluto/ppmd)* |
-| zip method 98 (PPMd variant I) | Ppmd8 |
+| zip method 98 (PPMd variant I) | *shipped (pluto/ppmd8)* |
+
+Every codec the formats xtar speaks now exists in pluto — the codec
+gap list is closed.
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
 `xtar: lzma/zstd compression not yet supported — see README "What is deliberately
