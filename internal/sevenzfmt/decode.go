@@ -11,6 +11,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"unicode/utf16"
@@ -19,6 +20,7 @@ import (
 	"github.com/pschlump/pluto/crc"
 	"github.com/pschlump/pluto/deflate"
 	"github.com/pschlump/pluto/lzma"
+	"github.com/pschlump/pluto/ppmd"
 	"github.com/pschlump/pluto/xz"
 	"github.com/pschlump/xtar/internal/member"
 )
@@ -181,6 +183,16 @@ func decodeCoder(c coder, ins [][]byte, outSize int64, password string) ([]byte,
 		out := lzma.DecodeRaw(ins[0], c.props, outSize)
 		if out == nil {
 			return nil, errors.New("7z: bad LZMA stream")
+		}
+		return out, nil
+	case bytes.Equal(c.id, idPPMd):
+		if len(c.props) != 5 {
+			return nil, errors.New("7z: bad PPMd properties")
+		}
+		memSize := binary.LittleEndian.Uint32(c.props[1:5])
+		out := ppmd.Decode(ins[0], int(c.props[0]), memSize, outSize)
+		if out == nil {
+			return nil, errors.New("7z: bad PPMd stream")
 		}
 		return out, nil
 	case bytes.Equal(c.id, idLZMA2):

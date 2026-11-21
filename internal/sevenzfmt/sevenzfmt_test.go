@@ -76,6 +76,7 @@ func TestCLIMatrix(t *testing.T) {
 		{"delta", []string{"-m0=delta"}},
 		{"deflate", []string{"-m0=deflate"}},
 		{"bzip2", []string{"-m0=bzip2"}},
+		{"ppmd", []string{"-m0=PPMd"}},
 		{"copy", []string{"-mx=0"}},
 		{"multifolder", []string{"-ms=100k"}},
 	}
@@ -362,4 +363,52 @@ func z7bin(t *testing.T) string {
 		}
 	}
 	return ""
+}
+
+// TestCLIPPMD decodes larger PPMd archives — big enough that the
+// model warms up, escapes fire, and a restart happens inside a small
+// arena — across orders and memory settings.
+func TestCLIPPMD(t *testing.T) {
+	bin := z7bin(t)
+	if bin == "" {
+		t.Skip("7-Zip CLI not installed")
+	}
+	dir := t.TempDir()
+	// text head, then pseudo-random bytes: the transition is where
+	// context-model decoders show their bugs
+	data := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 2500)
+	rnd := make([]byte, 2000)
+	sd := uint32(9)
+	for i := range rnd {
+		sd = sd*1664525 + 1013904223
+		rnd[i] = byte(sd >> 23)
+	}
+	data = append(data, rnd...)
+	src := filepath.Join(dir, "big.bin")
+	if err := os.WriteFile(src, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, set := range []string{"o=2:mem=1m", "o=6:mem=16m", "o=16:mem=1m"} {
+		t.Run(set, func(t *testing.T) {
+			arc := filepath.Join(t.TempDir(), "t.7z")
+			args := []string{"a", "-t7z", "-bd", "-y", arc, src, "-m0=PPMd:" + set}
+			if out, err := exec.Command(bin, args...).CombinedOutput(); err != nil {
+				t.Skipf("7z %v: %v\n%s", args, err, out)
+			}
+			b, err := os.ReadFile(arc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a, err := Parse(b, "")
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			if len(a.Members) != 1 {
+				t.Fatalf("members: %d", len(a.Members))
+			}
+			if !bytes.Equal(a.Members[0].Data, data) {
+				t.Fatalf("%s: content mismatch (%d vs %d bytes)", set, len(a.Members[0].Data), len(data))
+			}
+		})
+	}
 }

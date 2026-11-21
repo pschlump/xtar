@@ -694,7 +694,8 @@ Every codec xtar uses is pluto — no stdlib `compress/*`, no third-party code:
 | xz (LZMA2 container)    | `pluto/xz`             | same + `DecodeLZMA2` (7z members) |
 | lzma-alone (.lzma)      | `pluto/lzma`            | same + `DecodeRaw` (7z/zip members) |
 | zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy+predefined-FSE encode |
-| LZMA/LZMA2/delta/BCJ/AES (7z) | `pluto/xz`, `pluto/lzma` + xtar `sevenzfmt` | — |
+| PPMd variant-H (7z)     | `pluto/ppmd`            | `Decode(data, order, memSize, outSize) []byte` |
+| LZMA/LZMA2/delta/BCJ/PPMd/AES (7z) | `pluto/xz`, `pluto/lzma`, `pluto/ppmd` + xtar `sevenzfmt` | — |
 | CRC-32 (gzip/zip/cpio-crc checks) | `pluto/crc` | `MakeTable32/Checksum32` |
 | XXH64 (zstd checksums)  | xtar `zipfmt`/pluto `zstd` (internal `xxhash.go`) | — |
 | XXH32 (lz4 checksums)   | `pluto/lz4` (internal `xxh32.go`) | — |
@@ -708,7 +709,8 @@ variants (different wire formats) and are **not** used for any archive format
 | needed for        | missing codec      |
 |-------------------|--------------------|
 | `.tar.xz`, `.lzma` | *shipped (pluto M5)* |
-| PPMd (7z, zip method 98) | PPMd (pluto) |
+| PPMd read (7z)    | *shipped (pluto/ppmd)* |
+| PPMd write (7z), zip method 98 (variant I) | PPMd encoder, Ppmd8 |
 
 Until a codec exists, the extension/format **errors clearly** (e.g.
 `xtar: lzma/zstd compression not yet supported — see README "What is deliberately
