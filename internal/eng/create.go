@@ -33,6 +33,7 @@ type CreateOpts struct {
 	CpioFormat       string           // newc | crc | odc
 	ZipMethod        int              // zipfmt.Method*: -1 (unset) defaults to deflate
 	SevenZMethod     sevenzfmt.Method // 7z folder codec (zero value: LZMA by level)
+	ZipPPMd          zipfmt.PPMdOpts  // method-98 model knobs when writing zip
 	ZipPassword      string
 	ZipAES           int // WinZip AES strength (1-3) for zip output; 0 = traditional
 	ZipComment       string
@@ -132,7 +133,7 @@ func Create(o *CreateOpts) (*Archive, error) {
 		if o.ZipAES != 0 && o.ZipPassword != "" {
 			zipBlob, err = zipfmt.BuildAES(mems, o.ZipComment, o.ZipPassword, o.ZipAES)
 		} else {
-			zipBlob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword)
+			zipBlob, err = zipfmt.Build(mems, o.ZipComment, o.ZipPassword, o.ZipPPMd)
 		}
 		if err != nil {
 			return nil, err

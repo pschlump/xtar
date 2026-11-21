@@ -575,8 +575,23 @@ func extraAt(b []byte, lh int64) []byte {
 // with password.
 // Build encodes mems as a zip archive with traditional (ZipCrypto)
 // encryption when a password is given.
-func Build(mems []member.Member, comment, password string) ([]byte, error) {
-	return buildZip(mems, comment, password, 0)
+// PPMdOpts selects the method-98 model when the writer meets PPMd
+// members.  The zero value takes 7-Zip's level-5 defaults; explicit
+// values are validated and memory still clamps by member size the
+// way 7-Zip's encoder does (a smaller model is simply friendlier —
+// and keeps our members byte-identical to 7zz's for the same
+// request).
+type PPMdOpts struct {
+	Order  int // 0 default (8), else 2..16
+	MemMB  int // 0 default (clamped 16), else 1..256, then clamped
+	Restor int // 0 restart (default), 1 cut-off
+}
+
+func Build(mems []member.Member, comment, password string, ppmd PPMdOpts) ([]byte, error) {
+	if err := ppmd.valid(); err != nil {
+		return nil, err
+	}
+	return buildZip(mems, comment, password, 0, ppmd)
 }
 
 // BuildAES encodes mems as a zip archive with WinZip AES encryption
@@ -586,10 +601,10 @@ func BuildAES(mems []member.Member, comment, password string, strength int) ([]b
 	if _, _, ok := aesStrength(strength); !ok {
 		return nil, fmt.Errorf("zip: AES strength %d is not one of 1 (128), 2 (192), 3 (256)", strength)
 	}
-	return buildZip(mems, comment, password, strength)
+	return buildZip(mems, comment, password, strength, PPMdOpts{})
 }
 
-func buildZip(mems []member.Member, comment, password string, aesStrengthLevel int) ([]byte, error) {
+func buildZip(mems []member.Member, comment, password string, aesStrengthLevel int, ppmd PPMdOpts) ([]byte, error) {
 	var out bytes.Buffer
 	offsets := make([]uint64, len(mems))
 
@@ -660,7 +675,7 @@ func buildZip(mems []member.Member, comment, password string, aesStrengthLevel i
 			case MethodZstd:
 				comp = zstd.Compress(data)
 			case MethodPPMd:
-				pr := defaultPPMdProps(len(data))
+				pr := ppmd.resolve(len(data))
 				props := pr.Bytes()
 				comp = append(props[:], ppmd8.Encode(data, pr)...)
 				if len(comp) >= len(data) {
@@ -919,17 +934,38 @@ func isASCII(s string) bool {
 	return true
 }
 
-// defaultPPMdProps mirrors 7-Zip's level-5 defaults for zip PPMd:
-// order 8, restore-by-restart, and memory clamped by the member size
-// (the smallest power-of-two MB whose sixteenth the data fits in),
-// so ours and 7zz's writers choose the same model.
-func defaultPPMdProps(size int) ppmd8.Props {
-	mem := 16
+func (o PPMdOpts) valid() error {
+	if o.Order != 0 && (o.Order < 2 || o.Order > 16) {
+		return fmt.Errorf("zip: PPMd order must be 2..16, got %d", o.Order)
+	}
+	if o.MemMB != 0 && (o.MemMB < 1 || o.MemMB > 256) {
+		return fmt.Errorf("zip: PPMd memory must be 1..256 MB, got %d", o.MemMB)
+	}
+	if o.Restor != 0 && o.Restor != 1 {
+		return fmt.Errorf("zip: PPMd restore must be 0 (restart) or 1 (cut-off), got %d", o.Restor)
+	}
+	return nil
+}
+
+// resolve turns the options into wire props: 7-Zip's level-5
+// defaults (order 8, restore by restart, 16 MB) with any explicit
+// override, then memory clamped by the member size — the smallest
+// power-of-two MB whose sixteenth the data fits in — the same rule
+// 7-Zip's encoder applies to defaults and requests alike.
+func (o PPMdOpts) resolve(size int) ppmd8.Props {
+	order, mem, restor := 8, 16, 0
+	if o.Order != 0 {
+		order = o.Order
+	}
+	if o.MemMB != 0 {
+		mem = o.MemMB
+	}
+	restor = o.Restor
 	for m := 1; m < mem; m <<= 1 {
 		if int64(size) <= (int64(m)<<20)/16 {
 			mem = m
 			break
 		}
 	}
-	return ppmd8.Props{Order: 8, MemMB: mem, Restor: 0}
+	return ppmd8.Props{Order: order, MemMB: mem, Restor: restor}
 }

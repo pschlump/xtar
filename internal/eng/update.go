@@ -37,6 +37,7 @@ type UpdateOpts struct {
 	Level        int              // compression level for rebuilds (7z); 0 stores, -1 defaults
 	SevenZMethod sevenzfmt.Method // 7z folder codec for rebuilds
 	ZipMethod    int              // zipfmt.Method*; -1 (unset) defaults to deflate
+	ZipPPMd      zipfmt.PPMdOpts  // method-98 model knobs when rebuilding zip
 	Warn         func(string)
 }
 
@@ -158,7 +159,7 @@ func Update(o *UpdateOpts) (*UpdateResult, error) {
 	case "7z":
 		blob, err = sevenzfmt.Build(mems, o.Password, o.Level, o.SevenZMethod)
 	case "zip":
-		blob, err = zipfmt.Build(mems, a.Comment, "")
+		blob, err = zipfmt.Build(mems, a.Comment, "", o.ZipPPMd)
 	}
 	if err != nil {
 		return nil, err

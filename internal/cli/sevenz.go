@@ -77,13 +77,11 @@ func Sevenz(name string, argv []string) int {
 			}
 		case 'm':
 			// -mx9 / -mx=9: the level; -mem=aes[128|192|256]: WinZip AES
-			// for zip output; -m0=NAME / -mm=NAME: the member method
+			// for zip output; -m0=NAME / -m=NAME / -mm=NAME: the member
+			// method (with :o=… tuning suffixes for PPMd)
 			if v := strings.TrimPrefix(body, "m0="); v != body {
 				methodName = v
-			} else if v := strings.TrimPrefix(body, "m="); v != body && !strings.HasPrefix(v, "aes") {
-				methodName = v
-			}
-			if v := strings.TrimPrefix(body, "em=aes"); v != body {
+			} else if v := strings.TrimPrefix(body, "mem=aes"); v != body {
 				switch v {
 				case "128":
 					aesLevel = 1
@@ -94,6 +92,10 @@ func Sevenz(name string, argv []string) int {
 				default:
 					return e.fatal("-mem=aes: want 128, 192, or 256")
 				}
+			} else if v := strings.TrimPrefix(body, "mm="); v != body && !strings.HasPrefix(v, "aes") {
+				methodName = v
+			} else if v := strings.TrimPrefix(body, "m="); v != body && !strings.HasPrefix(v, "aes") {
+				methodName = v
 			}
 			v := strings.TrimPrefix(body, "mx")
 			v = strings.TrimPrefix(v, "=")
@@ -183,6 +185,7 @@ func Sevenz(name string, argv []string) int {
 
 // sevenzAdd creates or extends an archive; 7z recurses by default.
 func sevenzAdd(e *env, archive string, files []string, typeName, methodName, password string, level, method, aesLevel int, recurse bool, includes, excludes []*pat.Pattern, updateOnly bool) int {
+	var ppmd zipfmt.PPMdOpts
 	container := ""
 	codec := ""
 	switch typeName {
@@ -242,8 +245,9 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 		}
 	}
 	if container == "zip" {
-		// -m0=CODEC / -mm=CODEC select the zip member method
-		switch strings.ToLower(methodName) {
+		// -m0=CODEC[:opts] / -mm=CODEC[:opts] select the zip member method
+		zname, zrest, _ := strings.Cut(methodName, ":")
+		switch strings.ToLower(zname) {
 		case "lzma":
 			method = int(zipfmt.MethodLZMA)
 		case "zstd":
@@ -254,6 +258,10 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 			method = int(zipfmt.MethodDeflate)
 		case "ppmd":
 			method = int(zipfmt.MethodPPMd) // zip method 98: variant I
+			var ok bool
+			if ppmd, ok = parsePPMdZipOpts(e, zrest); !ok {
+				return 2
+			}
 		}
 	}
 
@@ -276,6 +284,7 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 			Update:       updateOnly,
 			Password:     password,
 			ZipMethod:    method,
+			ZipPPMd:      ppmd,
 			SevenZMethod: method7z,
 			Warn:         e.warn,
 		})
@@ -291,6 +300,7 @@ func sevenzAdd(e *env, archive string, files []string, typeName, methodName, pas
 		Codec:            codec,
 		Bare:             codec != "",
 		ZipMethod:        method,
+		ZipPPMd:          ppmd,
 		SevenZMethod:     method7z,
 		ZipPassword:      password,
 		ZipAES:           aesLevel,
@@ -365,4 +375,44 @@ func parseMemSize(s string) (uint32, bool) {
 		return 0, false
 	}
 	return uint32(n * mult), true
+}
+
+// parsePPMdZipOpts reads the tuning suffix of a zip PPMd method spec
+// — :o=ORDER (2..16), :mem=SIZE (1..256 MB, k/m/g suffixes),
+// :a=RESTORE (0 restart, 1 cut-off) — reporting errors through e.
+func parsePPMdZipOpts(e *env, spec string) (zipfmt.PPMdOpts, bool) {
+	var o zipfmt.PPMdOpts
+	if spec == "" {
+		return o, true
+	}
+	for _, opt := range strings.Split(strings.TrimPrefix(spec, ":"), ":") {
+		k, v, _ := strings.Cut(opt, "=")
+		switch strings.ToLower(k) {
+		case "o":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 2 || n > 16 {
+				e.fatal("PPMd: order must be 2..16")
+				return o, false
+			}
+			o.Order = n
+		case "mem":
+			mem, ok := parseMemSize(v)
+			if !ok || mem < 1<<20 || mem > 256<<20 {
+				e.fatal("PPMd: mem must be 1m..256m")
+				return o, false
+			}
+			o.MemMB = int(mem >> 20)
+		case "a":
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 || n > 1 {
+				e.fatal("PPMd: restore must be 0 (restart) or 1 (cut-off)")
+				return o, false
+			}
+			o.Restor = n
+		default:
+			e.fatal("PPMd: unknown option %q (want o=, mem=, a=)", k)
+			return o, false
+		}
+	}
+	return o, true
 }

@@ -36,7 +36,7 @@ func sampleMembers() []member.Member {
 // — deflate and store methods, the directory marker, and the archive
 // comment.
 func TestStdlibReadsOurZip(t *testing.T) {
-	blob, err := Build(sampleMembers(), "a comment", "")
+	blob, err := Build(sampleMembers(), "a comment", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestStdlibReadsOurZip(t *testing.T) {
 // TestOurParseOfOurBuild: round trip through our own parser, checking
 // kinds, modes, data, symlink targets, and per-entry raw state.
 func TestOurParseOfOurBuild(t *testing.T) {
-	blob, err := Build(sampleMembers(), "", "")
+	blob, err := Build(sampleMembers(), "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestEncryptionRoundTrip(t *testing.T) {
 		{Name: "enc.txt", Kind: member.Regular, Mode: 0o644, Data: []byte("secret content\n"), ModTime: mt(), Encrypted: true},
 		{Name: "plain.txt", Kind: member.Regular, Mode: 0o644, Data: []byte("open content\n"), ModTime: mt()},
 	}
-	blob, err := Build(mems, "", "pw123")
+	blob, err := Build(mems, "", "pw123", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestEncryptionRoundTrip(t *testing.T) {
 // produce byte-identical output (no password needed even for the
 // encrypted entry).
 func TestLosslessRebuild(t *testing.T) {
-	blob, err := Build(sampleMembers(), "keep me", "")
+	blob, err := Build(sampleMembers(), "keep me", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestLosslessRebuild(t *testing.T) {
 	for i := range a.Members {
 		a.Members[i].KeepStored = true
 	}
-	again, err := Build(a.Members, a.Comment, "")
+	again, err := Build(a.Members, a.Comment, "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestBZip2Method(t *testing.T) {
 		{Name: "bz.bin", Kind: member.Regular, Mode: 0o644,
 			Data: bytes.Repeat([]byte("bzip2 bzip2 bzip2 "), 20), ModTime: mt(), Method: MethodBZip2},
 	}
-	blob, err := Build(mems, "", "")
+	blob, err := Build(mems, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestBZip2Method(t *testing.T) {
 // TestPrependedData: junk before the zip (SFX stub) is detected via
 // the shift and the archive still parses.
 func TestPrependedData(t *testing.T) {
-	blob, err := Build(sampleMembers(), "", "")
+	blob, err := Build(sampleMembers(), "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestUTF8Names(t *testing.T) {
 	mems := []member.Member{
 		{Name: "ünïcode/файл.txt", Kind: member.Regular, Mode: 0o644, Data: []byte("x"), ModTime: mt()},
 	}
-	blob, err := Build(mems, "", "")
+	blob, err := Build(mems, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestUTF8Names(t *testing.T) {
 
 // TestEmptyArchive: an EOCD with zero entries parses.
 func TestEmptyArchive(t *testing.T) {
-	blob, err := Build(nil, "", "")
+	blob, err := Build(nil, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,7 +335,7 @@ func relabelAsSplit(t *testing.T, blob []byte, S int64) []byte {
 // candidate verified by name, and the archive decodes intact.
 func TestSplitOffsetsRecovered(t *testing.T) {
 	mems := sampleMembers()
-	blob, err := Build(mems, "", "")
+	blob, err := Build(mems, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func TestSplitOffsetsRecovered(t *testing.T) {
 // the archive, the directory is located by position — it physically
 // abuts the EOCD.
 func TestCDOffsetFallback(t *testing.T) {
-	blob, err := Build(sampleMembers(), "", "")
+	blob, err := Build(sampleMembers(), "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -495,7 +495,7 @@ func TestLZMAAndZstdMethods(t *testing.T) {
 		{"ppmd", MethodPPMd},
 	} {
 		mems := []member.Member{{Name: "d/big.txt", Mode: 0o644, Method: tc.method, Data: text}}
-		blob, err := Build(mems, "", "")
+		blob, err := Build(mems, "", "", PPMdOpts{})
 		if err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
@@ -531,7 +531,7 @@ func TestLZMAAndZstdMethods(t *testing.T) {
 
 	// the zstd project's method 20 reads (normalized from the same payload)
 	mems := []member.Member{{Name: "z", Mode: 0o644, Method: MethodZstd, Data: text}}
-	blob, _ := Build(mems, "", "")
+	blob, _ := Build(mems, "", "", PPMdOpts{})
 	blob[8+8] = byte(methodZstdZip) // local header method field
 	blob[8+9] = 0
 	j := bytes.Index(blob, []byte("PK\x01\x02"))
@@ -549,7 +549,7 @@ func TestLZMAAndZstdMethods(t *testing.T) {
 func TestPPMdZip(t *testing.T) {
 	text := bytes.Repeat([]byte("the quick brown fox jumps over the lazy dog. "), 400)
 	mems := []member.Member{{Name: "a.txt", Mode: 0o644, Method: MethodPPMd, Data: text}}
-	ours, err := Build(mems, "", "")
+	ours, err := Build(mems, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +600,7 @@ func TestPPMdZip(t *testing.T) {
 		rnd[i] = byte(sd >> 23)
 	}
 	rmems := []member.Member{{Name: "r.bin", Mode: 0o644, Method: MethodPPMd, Data: rnd}}
-	rblob, err := Build(rmems, "", "")
+	rblob, err := Build(rmems, "", "", PPMdOpts{})
 	if err != nil {
 		t.Fatal(err)
 	}

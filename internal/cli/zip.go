@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/pschlump/xtar/internal/eng"
 	"github.com/pschlump/xtar/internal/member"
@@ -69,6 +70,7 @@ func Zip(name string, argv []string) int {
 	var symlinks, noDirEntries bool
 	level := -1
 	method := -1
+	var ppmd zipfmt.PPMdOpts
 	tested := false
 
 	for {
@@ -118,7 +120,8 @@ func Zip(name string, argv []string) int {
 		case o.short == 'i':
 			includes = append(includes, t.value)
 		case o.short == 'Z':
-			switch t.value {
+			zname, zrest, _ := strings.Cut(t.value, ":")
+			switch zname {
 			case "store":
 				method = int(zipfmt.MethodStore)
 			case "deflate", "":
@@ -130,9 +133,13 @@ func Zip(name string, argv []string) int {
 			case "zstd":
 				method = int(zipfmt.MethodZstd)
 			case "ppmd":
-				method = int(zipfmt.MethodPPMd)
+				method = int(zipfmt.MethodPPMd) // zip method 98: variant I
+				var ok bool
+				if ppmd, ok = parsePPMdZipOpts(e, zrest); !ok {
+					return 2
+				}
 			default:
-				return e.fatal("unknown compression method %q (want store, deflate, bzip2, lzma, zstd, or ppmd)", t.value)
+				return e.fatal("unknown compression method %q (want store, deflate, bzip2, lzma, zstd, or ppmd[:o=2-16][:mem=SIZE][:a=0-1])", t.value)
 			}
 		case o.short == '0':
 			method = int(zipfmt.MethodStore)
@@ -216,6 +223,7 @@ func Zip(name string, argv []string) int {
 				Update:    update || freshen,
 				Password:  password,
 				ZipMethod: method,
+				ZipPPMd:   ppmd,
 				Warn:      e.warn,
 			})
 			if err != nil {
@@ -230,6 +238,7 @@ func Zip(name string, argv []string) int {
 			Path:             archive,
 			Container:        "zip",
 			ZipMethod:        method,
+			ZipPPMd:          ppmd,
 			ZipPassword:      password,
 			ZipComment:       comment,
 			Level:            level,

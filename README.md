@@ -192,6 +192,8 @@ zip -r -Z bzip2 out.zip dir/
 zip -r -Z lzma out.zip dir/
 zip -r -Z zstd out.zip dir/
 zip -r -Z ppmd out.zip dir/          # PPMd variant-I, method 98
+zip -r -Z ppmd:o=3:mem=64m:a=1 out.zip dir/   # tuned: order, memory, cut-off restore
+7z a -tzip -mm=ppmd:o=6:mem=16m out.zip dir/ # the same knobs from the 7z dialect
 zip -r -P secret out.zip dir/       # traditional encryption
 zip -r -t tar out.tar.gz dir/       # explicit container override: a real tar
 zip out.zip extra.txt               # add to an existing zip

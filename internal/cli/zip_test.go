@@ -8,6 +8,7 @@ package cli
 
 import (
 	"bytes"
+	"encoding/binary"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -307,5 +308,123 @@ func TestZipLZMAZstdCreate(t *testing.T) {
 		if err != nil || !bytes.Equal(got, bytes.Repeat([]byte("the quick brown fox. "), 500)) {
 			t.Fatalf("-Z %s: content mismatch", m)
 		}
+	}
+}
+
+// TestZipPPMdKnobs: -Z ppmd[:o=][:mem=][:a=] selects the method-98
+// model; the written props must land in the stream header, the
+// system 7z must verify and extract, and bad knobs are errors.
+func TestZipPPMdKnobs(t *testing.T) {
+	bin := ""
+	for _, n := range []string{"7zz", "7z"} {
+		if p, err := exec.LookPath(n); err != nil {
+			continue
+		} else {
+			bin = p
+			break
+		}
+	}
+	src, work := cliTree(t)
+	t.Chdir(src)
+	big := filepath.Join(src, "proj", "big.txt")
+	text := bytes.Repeat([]byte("the quick brown fox. "), 500) // ~11 KB
+	if err := os.WriteFile(big, text, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		opts   string
+		order  int
+		memMB  int
+		restor int
+	}{
+		{"", 8, 1, 0},             // defaults; 11 KB clamps memory to 1 MB
+		{":o=3", 3, 1, 0},         // the order knob
+		{":o=16", 16, 1, 0},       // the format's maximum order
+		{":a=1", 8, 1, 1},         // the cut-off restore method
+		{":o=4:mem=64m", 4, 1, 0}, // explicit memory clamps by size, as 7-Zip does
+	}
+	for _, tc := range cases {
+		out := filepath.Join(work, "pp"+tc.opts+".zip")
+		args := []string{"-Z", "ppmd" + tc.opts, out, "proj/big.txt"}
+		if code := Zip("zip", args); code != exitOK {
+			t.Fatalf("%s: exit %d", tc.opts, code)
+		}
+		z, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := binary.LittleEndian.Uint16(z[8:10]); m != 98 {
+			t.Fatalf("%s: method %d, want 98", tc.opts, m)
+		}
+		nlen := int(z[26])
+		elen := int(z[28])
+		csize := int(binary.LittleEndian.Uint32(z[18:22]))
+		st := z[30+nlen+elen : 30+nlen+elen+csize]
+		v := binary.LittleEndian.Uint16(st[:2])
+		if got := int(v&15) + 1; got != tc.order {
+			t.Errorf("%s: order %d, want %d", tc.opts, got, tc.order)
+		}
+		if got := int(v>>4&0xFF) + 1; got != tc.memMB {
+			t.Errorf("%s: mem %d MB, want %d", tc.opts, got, tc.memMB)
+		}
+		if got := int(v >> 12); got != tc.restor {
+			t.Errorf("%s: restore %d, want %d", tc.opts, got, tc.restor)
+		}
+		if bin != "" {
+			if o, err := exec.Command(bin, "t", out).CombinedOutput(); err != nil {
+				t.Fatalf("%s: system 7z rejected: %v\n%s", tc.opts, err, o)
+			}
+			dst := filepath.Join(work, "x"+tc.opts)
+			if o, err := exec.Command(bin, "x", "-y", "-o"+dst, out).CombinedOutput(); err != nil {
+				t.Fatalf("%s: system 7z extract: %v\n%s", tc.opts, err, o)
+			}
+			got, _ := os.ReadFile(filepath.Join(dst, "proj", "big.txt"))
+			if !bytes.Equal(got, text) {
+				t.Fatalf("%s: content mismatch", tc.opts)
+			}
+		}
+	}
+	for _, bad := range []string{":o=1", ":o=17", ":mem=999", ":a=2", ":bogus=1"} {
+		if code := Zip("zip", []string{"-Z", "ppmd" + bad, filepath.Join(work, "bad.zip"), "proj"}); code == exitOK {
+			t.Errorf("ppmd%s: accepted", bad)
+		}
+	}
+}
+
+// TestSevenzZipSwitchSpellings: -m0=, -m=, and -mm= all select the
+// member method, and -mem=aes selects WinZip AES (the aes and mm
+// spellings were silently ignored once).
+func TestSevenzZipSwitchSpellings(t *testing.T) {
+	src, work := cliTree(t)
+	t.Chdir(src)
+	big := filepath.Join(src, "proj", "big.txt")
+	if err := os.WriteFile(big, bytes.Repeat([]byte("knobs. "), 3000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, sw := range []string{"-m0=ppmd", "-m=ppmd", "-mm=ppmd"} {
+		out := filepath.Join(work, "sw.zip")
+		os.Remove(out)
+		if code := Sevenz("7z", []string{"a", "-bd", "-tzip", sw, out, "proj/big.txt"}); code != exitOK {
+			t.Fatalf("%s: exit %d", sw, code)
+		}
+		z, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := binary.LittleEndian.Uint16(z[8:10]); m != 98 {
+			t.Errorf("%s: method %d, want 98", sw, m)
+		}
+	}
+	// -mem=aes256 with a password writes WinZip AES (method 99)
+	out := filepath.Join(work, "aes.zip")
+	if code := Sevenz("7z", []string{"a", "-bd", "-tzip", "-mem=aes256", "-pseekrit", out, "proj/big.txt"}); code != exitOK {
+		t.Fatalf("-mem=aes256: exit %d", code)
+	}
+	z, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := binary.LittleEndian.Uint16(z[8:10]); m != 99 {
+		t.Errorf("-mem=aes256: method %d, want 99", m)
 	}
 }
