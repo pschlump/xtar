@@ -696,7 +696,7 @@ Every codec xtar uses is pluto — no stdlib `compress/*`, no third-party code:
 | lz4 frames (v1.6.5)     | `pluto/lz4`            | same      |
 | xz (LZMA2 container)    | `pluto/xz`             | same + `DecodeLZMA2` (7z members) |
 | lzma-alone (.lzma)      | `pluto/lzma`            | same + `DecodeRaw` (7z/zip members) |
-| zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy+predefined-FSE encode |
+| zstd (RFC 8878)         | `pluto/zstd`            | same; full decode, greedy encode with Huffman literals and custom FSE sequence tables (predefined/RLE/FSE/repeat chosen per block) |
 | PPMd variant-H (7z)     | `pluto/ppmd`            | `Decode(data, order, memSize, outSize)`, `Encode(data, order, memSize)` — the encoder is byte-identical to 7zz |
 | PPMd variant-I, zip method 98 | `pluto/ppmd8`   | `Decode(data, Props, outSize)`, `Encode(data, Props)` — byte-identical to 7zz, both restore methods |
 | LZMA/LZMA2/delta/BCJ/PPMd/AES (7z) | `pluto/xz`, `pluto/lzma`, `pluto/ppmd` + xtar `sevenzfmt` | — |
