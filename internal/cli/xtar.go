@@ -55,11 +55,15 @@ func Xtar(name string, argv []string) int {
 		return exitOK
 	case "--sniff":
 		return sniffCmd(e, argv[1:])
+	case "age-keygen", "age-encrypt", "age-decrypt":
+		// File encryption: its own verbs, parsed before the archive
+		// flags, so -i and -R stay key-file options here.
+		return ageCmd(e, verb, argv[1:])
 	case "i":
 		return infoCmd()
 	case "c", "x", "l", "t":
 	default:
-		return e.fatal("unknown verb %q (want c, x, l, t, i, --sniff)", verb)
+		return e.fatal("unknown verb %q (want c, x, l, t, i, --sniff, age-keygen, age-encrypt, age-decrypt)", verb)
 	}
 
 	st := newArgStream(xtarSpecs, argv[1:], false)
@@ -265,7 +269,13 @@ func Xtar(name string, argv []string) int {
 }
 
 func usageXtar(name string) {
-	fmt.Fprintf(os.Stderr, "usage: %s {c|x|l|t|i} [flags] ARCHIVE [MEMBERS...]\n       %s --sniff FILE...\n", name, name)
+	fmt.Fprintf(os.Stderr, "usage: %s {c|x|l|t|i} [flags] ARCHIVE [MEMBERS...]\n", name)
+	fmt.Fprintf(os.Stderr, "       %s --sniff FILE...\n", name)
+	// File encryption: standard age v1, X25519 keys, streamed.  INPUT
+	// and -o default to standard input and output; "-" names either.
+	fmt.Fprintf(os.Stderr, "       %s age-keygen --identity-output KEY --recipient-output KEY.pub\n", name)
+	fmt.Fprintf(os.Stderr, "       %s age-encrypt -R RECIPIENTS [-R RECIPIENTS ...] [-o OUTPUT] [INPUT]\n", name)
+	fmt.Fprintf(os.Stderr, "       %s age-decrypt -i IDENTITY [-i IDENTITY ...] [-o OUTPUT] [INPUT]\n", name)
 }
 
 // sniffCmd is `xtar --sniff FILE...`.

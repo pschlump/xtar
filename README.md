@@ -21,8 +21,10 @@ every supported stream compression, and creates archives whose container and
 compression are chosen by the output filename's extension unless explicitly
 overridden by flags.
 
-All codecs come from the sibling pure-Go library [`pluto`](../pluto) — zero
-external dependencies, stdlib only.
+All codecs come from the sibling pure-Go library [`pluto`](../pluto) —
+stdlib only.  The one module from outside is `filippo.io/age`, used by
+the [`age-*` file-encryption commands](#encrypting-backups-age) and by
+nothing else.
 
 
 
@@ -87,9 +89,10 @@ sniffing table below, some spelling of `tar`, `cpio`, `unzip`, or
 9. [Unified semantics](#unified-semantics)
 10. [Codec mapping to pluto](#codec-mapping-to-pluto)
 11. [What is deliberately not supported (yet)](#what-is-deliberately-not-supported-yet)
-12. [Exit codes](#exit-codes)
-13. [Build and test](#build-and-test)
-14. [Roadmap](#roadmap)
+12. [Encrypting backups (age)](#encrypting-backups-age) — `age-keygen`, `age-encrypt`, `age-decrypt`
+13. [Exit codes](#exit-codes)
+14. [Build and test](#build-and-test)
+15. [Roadmap](#roadmap)
 
 ---
 
@@ -257,6 +260,9 @@ xtar l note.txt.gz                  # ...whose member is named note.txt
 xtar --sniff mystery-file           # identify without extracting:
 # mystery-file: gzip → tar (gnu) : 3 members, 1.2 MB → 4.7 MB
 xtar --sniff whole.z01              # the split set, assembled size
+xtar age-keygen --identity-output KEY --recipient-output KEY.pub
+xtar age-encrypt -R KEY.pub -o base.tar.gz.age base.tar.gz   # age, streamed
+xtar age-decrypt -i KEY -o base.tar.gz base.tar.gz.age       # (see below)
 ```
 
 ### Pipes, streams, and memory
@@ -265,7 +271,9 @@ Tar and cpio read **streaming** — one member at a time through the
 codec chain — so a 40 GB tarball lists in a few MB of RSS, from a
 file or a pipe; `-f -` is stdin and `-O` writes members to stdout.
 Zip, 7z, and bare streams are whole-buffer (their directories sit at
-the end or the stream is one member).
+the end or the stream is one member).  The
+[`age-*` commands](#encrypting-backups-age) stream like tar: a base
+backup of any size encrypts and decrypts in a few MB of memory.
 
 ### What every command refuses to do
 
@@ -536,11 +544,16 @@ xtar x [flags] ARCHIVE [MEMBERS..] extract
 xtar l [flags] ARCHIVE [MEMBERS..] list
 xtar t ARCHIVE...                  test (CRCs)
 xtar i                             list codecs/formats
+xtar age-keygen --identity-output KEY --recipient-output KEY.pub
+xtar age-encrypt -R RECIPIENTS [-o OUTPUT] [INPUT]
+xtar age-decrypt -i IDENTITY [-o OUTPUT] [INPUT]
 ```
 
 It accepts the superset: `-C DIR`, `-O`, `--strip-components`, `--exclude`,
 `--flatten` (= 7z `e`/unzip `-j`), `--format=`, `--encoding=`, `--stdin`/
-`--stdout`, `--sniff`.
+`--stdout`, `--sniff`.  The `age-*` verbs are a separate surface, parsed
+before the archive flags — there `-R` and `-i` are key files — and are
+covered in [Encrypting backups](#encrypting-backups-age).
 
 ---
 
@@ -757,6 +770,177 @@ file, and a bare compressed stream is a single member.
   7z *dialect* has driven tar/cpio/zip since M3.
 * **AppleDouble/xattr round-trip in zip** (`zip -X` adjacent metadata) and
   macOS resource forks — still out (sparse and PAX write shipped in M4).
+
+---
+
+## Encrypting backups (age)
+
+Three native verbs encrypt and decrypt **files** — a base backup or a
+WAL segment, not an archive — with [age](https://age-encryption.org/v1):
+the standard binary v1 format, X25519 keys, and authenticated
+streaming, all of it from the Go module `filippo.io/age`.  No
+cryptography is implemented here, and nothing is armored or wrapped in
+a container of our own: what comes out is a standard age file, which
+`age` and `rage` open.
+
+The purpose is unattended backup encryption.  A backup host that holds
+only a **public** recipient can encrypt; the **private** identity that
+can decrypt stays offline until a restore.
+
+```sh
+xtar age-keygen --identity-output PATH --recipient-output PATH
+
+xtar age-encrypt -R RECIPIENTS [-R RECIPIENTS ...] [-o OUTPUT] [INPUT]
+xtar age-encrypt --recipient-file PATH [--recipient-file PATH ...] \
+    [--output PATH] [INPUT]
+
+xtar age-decrypt -i IDENTITY [-i IDENTITY ...] [-o OUTPUT] [INPUT]
+xtar age-decrypt --identity-file PATH [--identity-file PATH ...] \
+    [--output PATH] [INPUT]
+```
+
+`-R`/`--recipient-file` and `-i`/`--identity-file` are synonyms, each
+repeatable, and at least one is required; both take file paths, not
+`-`.  `INPUT` is a file, `-`, or omitted — then standard input.
+`-o`/`--output` names a file, or `-` for standard output; omitted, the
+output goes to standard output.  `-o` may be given **once**: a second
+one is an error whatever its value.  `--` ends the options.  Nothing
+here is an archive flag: `xtar c` never encrypts, and `tar`/`zip`/`7z`
+have no `age-*` verb.
+
+### Keys: the recipient on the host, the identity offline
+
+```sh
+# Once, somewhere that can be kept offline afterwards:
+xtar age-keygen \
+  --identity-output /secure/recovery/exsms-backup-age-identity.txt \
+  --recipient-output /etc/exsms/exsms-backup-age-recipients.txt
+# age1...   ← standard output: the public recipient, and only that
+```
+
+| flag                 | the file holds                            | mode   | lives on                       |
+|----------------------|-------------------------------------------|--------|--------------------------------|
+| `--recipient-output` | the public `age1…` recipient, one line    | `0644` | every backup host — it is public configuration |
+| `--identity-output`  | the private `AGE-SECRET-KEY-1…` identity  | `0600` | offline; present only for a restore |
+
+Both are standard age key files; the identity file carries `# created:`
+and `# public key:` comment lines above the key.
+
+The modes are set explicitly, whatever the umask.  The identity goes to
+its file and never to standard output or standard error — nor should
+it ever be put on a command line: arguments are visible to every
+process in `ps`, and they land in shell history and in logs.  The
+commands take it as a *path*.  A recipients file is where a private key
+is most easily pasted by mistake, so key files are parsed without their
+lines ever reaching an error message; a private key found in a
+recipients file is refused and said so.  `age-keygen` replaces neither
+existing file, and writes either both of its files or neither.
+
+Key files are ordinary age key files: one key per line, blank lines and
+`#` comments ignored (surrounding blanks and CRLF are tolerated too),
+repeats dropped, cumulative across `-R`/`-i` flags.  A file with no key
+in it is an error.  Only X25519 keys are accepted: passphrases, SSH
+keys, plugin recipients, and the post-quantum hybrid `age1pq1…` /
+`AGE-SECRET-KEY-PQ-1…` keys are refused, by file and line.  `age` and
+`age-keygen` read these files unchanged, and the files `age-keygen`
+writes load here (`rage` uses the same format).
+
+### A base backup and a WAL segment
+
+```sh
+REC=/etc/exsms/exsms-backup-age-recipients.txt
+
+# a base backup: streamed, never held in memory
+xtar age-encrypt -R "$REC" -o base.tar.gz.age base.tar.gz
+
+# each WAL segment (~16 MiB), then upload the .age files
+xtar age-encrypt -R "$REC" -o 000000010000000000000042.age \
+    000000010000000000000042
+
+# straight out of pg_basebackup, as an atomic file at the end
+pg_basebackup -D - -Ft | gzip | xtar age-encrypt -R "$REC" -o base.tar.gz.age
+```
+
+```sh
+# a restore — the identity comes back online only for this
+xtar age-decrypt -i /secure/recovery/exsms-backup-age-identity.txt \
+    -o base.tar.gz base.tar.gz.age
+xtar age-decrypt -i /secure/recovery/exsms-backup-age-identity.txt \
+    -o 000000010000000000000042 000000010000000000000042.age
+```
+
+### What a file output guarantees
+
+With `-o PATH` the destination appears **whole or not at all**, which
+is why recovery uses file output:
+
+* **Atomic.**  The output is written to `.NAME.tmp-*` in the
+  destination directory, synced, and renamed into place only after the
+  last authenticated chunk (the directory is synced after the rename,
+  on UNIX).  Any failure — a wrong identity, a corrupt or truncated
+  file, a read or write error — removes the staged file and leaves no
+  destination.  A partial base backup or WAL segment cannot be
+  published, and a glob for `*.age` cannot match a file still being
+  written.  (A crash, power loss, or kill mid-run can leave a staged
+  `.NAME.tmp-*` file behind: it never becomes the destination, and it
+  can simply be deleted.)
+* **Never overwrites.**  An existing destination is refused before a
+  byte is read and again just before the rename; there is no
+  `--force`.  A symlink counts as existing and is never followed, so
+  its target is safe as well.  An input and an output that are the same
+  file — under any name — are refused, and the input is never opened
+  for writing.  Backup names are unique: choose a fresh path rather
+  than replacing one.
+* **Private by mode.**  Plaintext, ciphertext, and identity files are
+  `0600`.
+* **Streaming.**  Payloads pass through in 64 KiB chunks: nothing is
+  read into memory whole, so a multi-GiB base backup runs in a few MB.
+
+One limit of "never overwrites": between the last check and the
+rename — microseconds — another process writing the same name can
+still slip in.  Write each name from one process.
+
+Exit codes are the usual 0/1/2: **0** on success; **2** for anything
+that fails with nothing published (bad flags, bad keys, a wrong
+identity, a damaged file); **1** when the output *was* published
+complete but its directory could not be synced afterwards — a
+durability warning, not a lost file.
+
+### Standard output is not atomic
+
+Without `-o`, or with `-o -`, the bytes go down the pipe as they are
+produced.  age authenticates its final chunk only when that chunk is
+read, so an `age-decrypt` whose input turns out to be corrupt or
+truncated has already written the intact plaintext that precedes the
+damage.  The command then exits 2 and says on standard error that
+partial output was written — but the bytes are out.  A restore must
+therefore decrypt **to a file** (`-o PATH`) and use that file: never
+pipe `age-decrypt` straight into PostgreSQL or a data directory.
+
+### Rotation
+
+Each `-R` file adds its recipients, and the result opens with any one
+of the keys.  Every `-i` file is tried, in any order, so after a
+rotation a single command restores old and new backups alike.  A file
+encrypted to the new key alone is *not* opened by the retired one.
+
+```sh
+xtar age-encrypt -R current.txt -R recovery.txt -o x.age x
+xtar age-decrypt -i retired.txt -i current.txt x.age
+```
+
+### Scope
+
+This protects backup files once they leave the live PostgreSQL host —
+in storage, on the way to B2, on the restore host.  It does **not**
+encrypt the live database, and it does nothing about host root, which
+can read the local plaintext (`base.tar.gz`, WAL segments, staged
+temporary files) while it exists on the backup host.
+
+Not included, deliberately: passphrase (`scrypt`) encryption, SSH
+recipients, plugins, post-quantum hybrid keys, and ASCII armor.  The
+password-based zip and 7z encryption elsewhere in xtar is untouched
+and separate.
 
 ---
 
