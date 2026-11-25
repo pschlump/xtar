@@ -1,4 +1,5 @@
 bin/
+note/
 ,*
 cover.out
 .claude/settings.local.json
