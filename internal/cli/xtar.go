@@ -312,6 +312,11 @@ func infoCmd() int {
 	fmt.Println("containers: cpio, zip (planned — see README roadmap)")
 	fmt.Println("codecs:     gzip, bzip2, compress (.Z), lz4")
 	fmt.Println("planned:    xz, zstd, lzma, lzip, 7z containers (see README)")
+	// File encryption: the age verbs, in the usage's own words.
+	fmt.Println("encryption: age v1 — X25519 keys, binary, authenticated, streamed")
+	fmt.Println("verbs:      xtar age-keygen --identity-output KEY --recipient-output KEY.pub")
+	fmt.Println("            xtar age-encrypt -R RECIPIENTS [-R RECIPIENTS ...] [-o OUTPUT] [INPUT]")
+	fmt.Println("            xtar age-decrypt -i IDENTITY [-i IDENTITY ...] [-o OUTPUT] [INPUT]")
 	return exitOK
 }
 

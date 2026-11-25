@@ -108,8 +108,9 @@ func TestAgeDashDash(t *testing.T) {
 	ageOnly(t, dir, "-odd-input", "-odd-input.age")
 }
 
-// TestAgeHelp: the three commands are in the usage and in the
-// unknown-verb error, and the archive verb still rejects their flags.
+// TestAgeHelp: the three commands are in the usage, in `xtar i`, and
+// in the unknown-verb error, and the archive verb still rejects their
+// flags.
 func TestAgeHelp(t *testing.T) {
 	old := os.Stderr
 	r, w, _ := os.Pipe()
@@ -128,6 +129,25 @@ func TestAgeHelp(t *testing.T) {
 	}
 	if !bytes.Contains(usage, []byte("{c|x|l|t|i}")) || !bytes.Contains(usage, []byte("--sniff")) {
 		t.Errorf("usage lost its archive lines:\n%s", usage)
+	}
+
+	// `xtar i` lists what the build does, the encryption included.
+	code, info, errs := ageCall(nil, "i")
+	if code != exitOK || len(errs) != 0 {
+		t.Fatalf("xtar i: exit %d, %s", code, errs)
+	}
+	for _, want := range []string{"encryption: age v1", "X25519",
+		"xtar age-keygen --identity-output KEY --recipient-output KEY.pub",
+		"xtar age-encrypt -R RECIPIENTS [-R RECIPIENTS ...] [-o OUTPUT] [INPUT]",
+		"xtar age-decrypt -i IDENTITY [-i IDENTITY ...] [-o OUTPUT] [INPUT]"} {
+		if !strings.Contains(string(info), want) {
+			t.Errorf("xtar i lacks %q:\n%s", want, info)
+		}
+	}
+	for _, gone := range []string{"containers: tar", "codecs:"} {
+		if !strings.Contains(string(info), gone) {
+			t.Errorf("xtar i lost its %q line:\n%s", gone, info)
+		}
 	}
 	if code, _, errs := ageCall(nil, "nope"); code != exitFatal || !strings.Contains(string(errs), "unknown verb") ||
 		!strings.Contains(string(errs), "age-keygen, age-encrypt, age-decrypt") {
