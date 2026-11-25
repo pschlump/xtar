@@ -942,6 +942,38 @@ recipients, plugins, post-quantum hybrid keys, and ASCII armor.  The
 password-based zip and 7z encryption elsewhere in xtar is untouched
 and separate.
 
+### ExSMS backup-tool acceptance — 2026-11-25
+
+ExSMS reviewed and accepted revision
+`816ae21afaf52284e6a9ab54c27247e3645248ab` for its planned PostgreSQL base/WAL
+encryption integration. The exact CLI above is the accepted surface; in
+particular, input is positional/stdin (there is no `--input` option), and
+recovery will use `-o PATH` rather than decrypted stdout.
+
+The following passed on macOS/arm64 with Go 1.27 and `filippo.io/age v1.3.2`:
+
+```sh
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+golangci-lint run ./...                         # 0 issues
+go test ./internal/cli -run '^TestAgeSystemInterop$' -v -count=1
+XTAR_TEST_LARGE=1 go test ./internal/cli -run '^TestAgeLargeStream$' -v -count=1
+go build -o /tmp/xtar-age-review .
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/xtar-age-review-linux-amd64 .
+```
+
+The independent installed age CLI decrypted xtar's output and xtar decrypted
+its output, including key files and pipes. The 256 MiB generated-stream round
+trip matched byte-for-byte with sampled heap growth of 3 MiB above baseline.
+A separately built binary also passed keygen mode checks, file/stdin/stdout
+round trips, both independent-age directions, and real CLI wrong-key, tamper,
+truncation, and existing-output refusal with no published partial destination.
+
+This accepts **xtar as the tool**, not the ExSMS production cutover. ExSMS still
+needs Bitwarden identity custody, mixed plaintext/age restore and pruning,
+staging and production restore drills, and only then encrypted writes.
+
 ---
 
 ## Exit codes
